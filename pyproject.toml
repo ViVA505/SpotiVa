@@ -25,3 +25,6 @@ package-dir = {"" = "app"}
 
 [tool.setuptools.packages.find]
 where = ["app"]
+
+[tool.setuptools.package-data]
+spotiva = ["ui/qt/assets/*.svg"]

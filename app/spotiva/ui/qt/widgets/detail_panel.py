@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.request import urlopen
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QThread, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from spotiva.domain.entities.track import Track
 from spotiva.ui.qt.widgets.buttons import PrimaryButton, SecondaryButton
+
+
+_FOLDER_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "folder_download.svg"
 
 
 class ArtworkLoader(QThread):
@@ -28,42 +32,7 @@ class ArtworkLoader(QThread):
 
 
 def _build_folder_icon() -> QIcon:
-    icon = QIcon()
-    icon.addPixmap(_render_folder_icon(QColor("#edf6f0"), QColor("#111614")), QIcon.Mode.Normal)
-    icon.addPixmap(_render_folder_icon(QColor("#2dd870"), QColor("#07100a")), QIcon.Mode.Active)
-    icon.addPixmap(_render_folder_icon(QColor("#5e6963"), QColor("#171b19")), QIcon.Mode.Disabled)
-    return icon
-
-
-def _render_folder_icon(fill_color: QColor, detail_color: QColor) -> QPixmap:
-    pixmap = QPixmap(24, 24)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(fill_color)
-
-    folder_path = QPainterPath()
-    folder_path.moveTo(4.0, 6.5)
-    folder_path.lineTo(9.2, 6.5)
-    folder_path.cubicTo(10.8, 6.5, 11.4, 7.3, 12.2, 8.5)
-    folder_path.lineTo(17.8, 8.5)
-    folder_path.cubicTo(19.9, 8.5, 21.0, 9.8, 21.0, 11.8)
-    folder_path.lineTo(21.0, 17.8)
-    folder_path.cubicTo(21.0, 19.9, 19.9, 21.0, 17.8, 21.0)
-    folder_path.lineTo(6.2, 21.0)
-    folder_path.cubicTo(4.1, 21.0, 3.0, 19.9, 3.0, 17.8)
-    folder_path.lineTo(3.0, 7.6)
-    folder_path.cubicTo(3.0, 6.9, 3.4, 6.5, 4.0, 6.5)
-    folder_path.closeSubpath()
-    painter.drawPath(folder_path)
-
-    painter.setPen(QPen(detail_color, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    painter.drawLine(8, 13, 12, 13)
-    painter.drawLine(8, 16, 12, 16)
-    painter.end()
-    return pixmap
+    return QIcon(str(_FOLDER_ICON_PATH))
 
 
 class DetailPanel(QFrame):
