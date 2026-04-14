@@ -1,7 +1,7 @@
 # SpotiVa
 SpotiVa is a desktop app for looking up and downloading tracks.
 
-***
+
 
 ## Features
 
