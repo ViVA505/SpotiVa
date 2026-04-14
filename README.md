@@ -10,7 +10,7 @@ SpotiVa is a desktop app for looking up and downloading tracks.
 - Paste a Spotify track link and download it
 - Add in search engine by album title through only SoundCloud
 - Paste a Spotify album link and install
-- Search by line of lyrics from a song (using Genius parsing and percentage ratio)
+- Search by line of lyrics from a song (through only SoundCloud)(using Genius parsing and percentage ratio)
 
 ***
 ![img_1.png](photo/img_1.png)
