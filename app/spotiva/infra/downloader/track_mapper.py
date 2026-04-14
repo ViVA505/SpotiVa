@@ -8,38 +8,68 @@ from spotiva.infra.downloader.models import DownloadSearchResult
 
 
 class DownloadTrackMapper:
-    _TITLE_SEPARATORS = (" - ", " – ", " — ")
-    _FEATURE_SPLIT_RE = re.compile(r"(?:\bfeat(?:uring)?\.?|\bft\.?|\bwith\b)", re.IGNORECASE)
-    _ARTIST_SPLIT_RE = re.compile(r"\s*(?:,|&| and | x | / )\s*", re.IGNORECASE)
+    _TITLE_SEPARATORS = (" - ", " вЂ“ ", " вЂ” ")
+    _FEATURE_SPLIT_RE = re.compile(
+        r"(?:\bfeat(?:uring)?\.?|\bft\.?|\bwith\b)",
+        re.IGNORECASE,
+    )
+    _ARTIST_SPLIT_RE = re.compile(
+        r"\s*(?:,|&| and | x | / )\s*",
+        re.IGNORECASE,
+    )
     _NOISE_BLOCK_RE = re.compile(
-        r"\s*[\[(](?:official\b[^)\]]*|lyrics\b[^)\]]*|audio\b[^)\]]*|video\b[^)\]]*|visualizer\b[^)\]]*)[\])]\s*",
+        (
+            r"\s*[\[(](?:official\b[^)\]]*|lyrics\b[^)\]]*|audio\b[^)\]]*|"
+            r"video\b[^)\]]*|visualizer\b[^)\]]*)[\])]\s*"
+        ),
+        re.IGNORECASE,
+    )
+    _DERIVATIVE_RE = re.compile(
+        r"\b(?:cover|кавер|remix|bootleg|edit|nightcore|sped up|slowed)\b",
         re.IGNORECASE,
     )
     _MULTISPACE_RE = re.compile(r"\s+")
 
     def map_result(self, item: DownloadSearchResult) -> Track:
-        track_name, artist_names = self._parse_metadata(item.title, item.artist)
+        track_name, artist_names = self._parse_metadata(
+            item.title,
+            item.artist,
+            prefer_fallback_artist=self._is_derivative_title(item.title),
+        )
         images = [TrackImage(url=item.image_url)] if item.image_url else []
-        track_id = f"{item.source}:{item.source_id or item.title}"
+        album_name = (
+            track_name if item.item_type == "album" else (item.album or "Single")
+        )
+        track_id = f"{item.source}:{item.item_type}:{item.source_id or item.title}"
         return Track(
             track_id=track_id,
             name=track_name,
             artists=[Artist(name=name) for name in artist_names],
-            album=Album(name=item.album or "Single", images=images),
+            album=Album(name=album_name, images=images),
             duration_ms=max(0, item.duration_ms),
             spotify_url="",
             external_url=item.page_url,
             download_url=item.page_url or None,
             source_label=title_search_source_label(item.source),
             is_downloadable=bool(item.page_url),
+            item_type=item.item_type,
+            item_count=max(0, item.item_count),
         )
 
-    def _parse_metadata(self, title: str, fallback_artist: str) -> tuple[str, list[str]]:
+    def _parse_metadata(
+        self,
+        title: str,
+        fallback_artist: str,
+        prefer_fallback_artist: bool = False,
+    ) -> tuple[str, list[str]]:
         normalized_title = self._normalize_text(title) or "Unknown Title"
         normalized_artist = self._normalize_text(fallback_artist)
         title_artist, title_name = self._split_title(normalized_title)
 
-        artist_names = self._extract_artist_names(title_artist or normalized_artist)
+        if prefer_fallback_artist and normalized_artist:
+            artist_names = self._extract_artist_names(normalized_artist)
+        else:
+            artist_names = self._extract_artist_names(title_artist or normalized_artist)
         cleaned_title, featured_names = self._extract_featured_artists(title_name)
         artist_names.extend(featured_names)
 
@@ -72,7 +102,11 @@ class DownloadTrackMapper:
 
         clean_title = self._normalize_text(title[: match.start()])
         featured_block = self._normalize_text(title[match.end() :])
-        featured_block = re.split(r"\s[-–—]\s|[\[(]", featured_block, maxsplit=1)[0]
+        featured_block = re.split(
+            r"\s[-вЂ“вЂ”]\s|[\[(]",
+            featured_block,
+            maxsplit=1,
+        )[0]
         return clean_title, self._split_artist_names(featured_block)
 
     def _extract_artist_names(self, raw_value: str) -> list[str]:
@@ -93,7 +127,10 @@ class DownloadTrackMapper:
 
         return [
             name
-            for name in (self._cleanup_artist_name(part) for part in self._ARTIST_SPLIT_RE.split(normalized))
+            for name in (
+                self._cleanup_artist_name(part)
+                for part in self._ARTIST_SPLIT_RE.split(normalized)
+            )
             if name
         ]
 
@@ -119,3 +156,6 @@ class DownloadTrackMapper:
 
     def _normalize_text(self, value: str) -> str:
         return self._MULTISPACE_RE.sub(" ", value.strip())
+
+    def _is_derivative_title(self, value: str) -> bool:
+        return bool(self._DERIVATIVE_RE.search(value or ""))

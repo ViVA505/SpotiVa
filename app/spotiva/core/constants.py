@@ -5,10 +5,11 @@ DEFAULT_MARKET = "US"
 DEFAULT_REQUEST_TIMEOUT = 15
 DEFAULT_SEARCH_LIMIT = 8
 DEFAULT_TITLE_SEARCH_SOURCE = "youtube"
+DEFAULT_LYRIC_SEARCH_ENABLED = True
 TITLE_SEARCH_SOURCE_LABELS = {
     "youtube": "YouTube",
     "soundcloud": "SoundCloud",
 }
 SPOTIFY_ACCOUNTS_URL = "https://accounts.spotify.com/api/token"
 SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
-SUPPORTED_RESOURCE_TYPES = {"track"}
+SUPPORTED_RESOURCE_TYPES = {"track", "album"}

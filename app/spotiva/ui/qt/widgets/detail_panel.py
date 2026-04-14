@@ -3,15 +3,33 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.request import urlopen
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QThread,
+    QUrl,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from spotiva.domain.entities.track import Track
 from spotiva.ui.qt.widgets.buttons import PrimaryButton, SecondaryButton
 
 
-_FOLDER_ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "folder_download.svg"
+_FOLDER_ICON_PATH = (
+    Path(__file__).resolve().parent.parent / "assets" / "folder_download.svg"
+)
 
 
 class ArtworkLoader(QThread):
@@ -52,6 +70,7 @@ class DetailPanel(QFrame):
         self._track = None
         self._artwork_loader = None
         self._artwork_cache: dict[str, QPixmap] = {}
+        self._prefetch_loaders: dict[str, ArtworkLoader] = {}
         self._pending_artwork_url = ""
         self._is_download_busy = False
 
@@ -91,7 +110,10 @@ class DetailPanel(QFrame):
 
         self._action_surface = QFrame(self)
         self._action_surface.setObjectName("actionSurface")
-        self._action_surface.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
+        self._action_surface.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Maximum,
+        )
         self._action_layout = QVBoxLayout(self._action_surface)
         self._action_layout.setContentsMargins(12, 18, 18, 18)
         self._action_layout.setSpacing(14)
@@ -101,7 +123,10 @@ class DetailPanel(QFrame):
         self._buttons_row.setContentsMargins(0, 0, 0, 0)
         self._buttons_row.setSpacing(10)
         self._download_button = PrimaryButton("Download", self._action_surface)
-        self._download_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._download_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         self._download_button.clicked.connect(self._download_track)
         self._buttons_row.addWidget(self._download_button)
         self._buttons_row.addStretch(1)
@@ -127,16 +152,25 @@ class DetailPanel(QFrame):
         self._secondary_buttons_row.setSpacing(10)
 
         self._open_button = SecondaryButton("Open", self._action_surface)
-        self._open_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._open_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         self._open_button.clicked.connect(self._open_track)
         self._secondary_buttons_row.addWidget(self._open_button)
 
         self._copy_button = SecondaryButton("Copy Link", self._action_surface)
-        self._copy_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._copy_button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         self._copy_button.clicked.connect(self._copy_link)
         self._secondary_buttons_row.addWidget(self._copy_button)
         self._action_layout.addWidget(self._actions_container)
-        self._layout.addWidget(self._action_surface, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._layout.addWidget(
+            self._action_surface,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
         self._layout.addStretch()
 
         self._reveal = QPropertyAnimation(self, b"windowOpacity", self)
@@ -156,11 +190,18 @@ class DetailPanel(QFrame):
         self._track = track
         self._title.setText(track.name)
         self._artist_label.setText(track.artist_line())
-        meta_parts = []
-        if track.album.name:
-            meta_parts.append(track.album.name)
-        if track.duration_ms > 0:
-            meta_parts.append(track.duration_label())
+        if track.is_album_result():
+            meta_parts = [track.item_type_label()]
+            if track.item_count_label():
+                meta_parts.append(track.item_count_label())
+        else:
+            meta_parts = []
+            if track.album.name:
+                meta_parts.append(track.album.name)
+            if track.duration_ms > 0:
+                meta_parts.append(track.duration_label())
+        if track.has_lyric_match():
+            meta_parts.append(f"Genius {track.lyric_match_badge_label().lower()}")
         self._meta_label.setText(" / ".join(meta_parts))
         self._title.setVisible(True)
         self._artist_label.setVisible(bool(track.artist_line()))
@@ -225,12 +266,44 @@ class DetailPanel(QFrame):
             return
         self._download_path_label.setText("Choose a download folder")
 
+    def prime_artwork_cache(self, tracks: list[Track], limit: int = 6) -> None:
+        for track in tracks[: max(1, limit)]:
+            url = track.best_image_url()
+            if not url:
+                continue
+            self._prefetch_artwork(url)
+
+    def prime_artwork_payloads(self, artwork_payloads: dict[str, bytes]) -> None:
+        for url, payload in artwork_payloads.items():
+            if not url or not payload:
+                continue
+            pixmap = QPixmap()
+            pixmap.loadFromData(payload)
+            if pixmap.isNull():
+                continue
+            self._artwork_cache[url] = pixmap
+
+    def prefetch_artwork_url(self, artwork_url: str) -> None:
+        self._prefetch_artwork(artwork_url.strip())
+
+    def show_resolved_artwork(self, track_id: str, artwork_url: str) -> None:
+        if not artwork_url:
+            return
+        if not self._track or self._track.track_id != track_id:
+            return
+        self._load_artwork(artwork_url)
+
     def _apply_responsive_metrics(self) -> None:
         scale = self._responsive_scale()
 
         outer_margin = self._scaled(24, scale)
         outer_spacing = self._scaled(14, scale)
-        self._layout.setContentsMargins(outer_margin, outer_margin, outer_margin, outer_margin)
+        self._layout.setContentsMargins(
+            outer_margin,
+            outer_margin,
+            outer_margin,
+            outer_margin,
+        )
         self._layout.setSpacing(outer_spacing)
 
         cover_size = self._scaled(240, scale)
@@ -241,14 +314,19 @@ class DetailPanel(QFrame):
         action_right = self._scaled(18, scale)
         action_bottom = self._scaled(18, scale)
         action_spacing = self._scaled(14, scale)
-        self._action_layout.setContentsMargins(action_left, action_top, action_right, action_bottom)
+        self._action_layout.setContentsMargins(
+            action_left,
+            action_top,
+            action_right,
+            action_bottom,
+        )
         self._action_layout.setSpacing(action_spacing)
 
         row_spacing = self._scaled(10, scale)
         self._buttons_row.setSpacing(row_spacing)
         self._secondary_buttons_row.setSpacing(row_spacing)
 
-        download_width = self._scaled(208, scale)
+        download_width = self._scaled(228, scale)
         primary_height = self._scaled(46, scale)
         secondary_height = self._scaled(44, scale)
         secondary_width = self._scaled(160, scale)
@@ -272,7 +350,9 @@ class DetailPanel(QFrame):
         self._title.setStyleSheet(f"font-size: {self._scaled(24, scale)}px;")
         self._artist_label.setStyleSheet(f"font-size: {self._scaled(15, scale)}px;")
         self._meta_label.setStyleSheet(f"font-size: {self._scaled(13, scale)}px;")
-        self._download_path_label.setStyleSheet(f"font-size: {self._scaled(12, scale)}px;")
+        self._download_path_label.setStyleSheet(
+            f"font-size: {self._scaled(12, scale)}px;"
+        )
         self._cover_label.setStyleSheet(f"font-size: {self._scaled(13, scale)}px;")
         button_font_size = self._scaled(13, scale)
         self._download_button.setStyleSheet(f"font-size: {button_font_size}px;")
@@ -305,10 +385,28 @@ class DetailPanel(QFrame):
         self._cover_label.setText("Loading artwork...")
         self._cover_label.setPixmap(QPixmap())
 
+        if url in self._prefetch_loaders:
+            return
+
         self._artwork_loader = ArtworkLoader(url, self._request_timeout, self)
         self._artwork_loader.completed.connect(self._apply_artwork)
         self._artwork_loader.failed.connect(self._apply_artwork_fallback)
         self._artwork_loader.start()
+
+    def _prefetch_artwork(self, url: str) -> None:
+        if (
+            not url
+            or url in self._artwork_cache
+            or url in self._prefetch_loaders
+            or url == self._pending_artwork_url
+        ):
+            return
+
+        loader = ArtworkLoader(url, self._request_timeout, self)
+        loader.completed.connect(self._cache_prefetched_artwork)
+        loader.failed.connect(self._release_prefetch_loader)
+        self._prefetch_loaders[url] = loader
+        loader.start()
 
     def _apply_artwork(self, url: str, data: bytes) -> None:
         if url != self._pending_artwork_url:
@@ -330,6 +428,21 @@ class DetailPanel(QFrame):
         self._cover_label.setPixmap(QPixmap())
         self._cover_label.setText("Artwork unavailable")
 
+    def _cache_prefetched_artwork(self, url: str, data: bytes) -> None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(data)
+        if not pixmap.isNull():
+            self._artwork_cache[url] = pixmap
+            if url == self._pending_artwork_url:
+                self._cover_label.setPixmap(self._scaled_artwork_pixmap(pixmap))
+                self._cover_label.setText("")
+        self._release_prefetch_loader(url)
+
+    def _release_prefetch_loader(self, url: str) -> None:
+        loader = self._prefetch_loaders.pop(url, None)
+        if loader is not None:
+            loader.deleteLater()
+
     def _open_track(self) -> None:
         if self._track and self._track.open_url():
             QDesktopServices.openUrl(QUrl(self._track.open_url()))
@@ -350,7 +463,16 @@ class DetailPanel(QFrame):
         )
 
     def _update_download_controls(self) -> None:
-        can_download = bool(self._track and self._track.is_downloadable and not self._is_download_busy)
+        can_download = bool(
+            self._track
+            and self._track.is_downloadable
+            and not self._is_download_busy
+        )
         self._download_button.setEnabled(can_download)
-        self._download_button.setText("Downloading..." if self._is_download_busy else "Download")
+        button_text = (
+            "Downloading..."
+            if self._is_download_busy
+            else self._track.download_action_label() if self._track else "Download"
+        )
+        self._download_button.setText(button_text)
         self._folder_button.setEnabled(not self._is_download_busy)

@@ -13,3 +13,5 @@ class DownloadSearchResult:
     image_url: str = ""
     album: str = "Single"
     duration_ms: int = 0
+    item_type: str = "track"
+    item_count: int = 0

@@ -12,5 +12,5 @@ class SearchTracksUseCase:
     def execute(self, query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[Track]:
         normalized = query.strip()
         if not normalized:
-            raise ValueError("Enter a track title or paste a Spotify track link.")
+            raise ValueError("Enter a track title or paste a Spotify link.")
         return self._repository.search_tracks(normalized, limit)

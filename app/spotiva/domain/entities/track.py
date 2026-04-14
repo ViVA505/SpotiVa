@@ -39,6 +39,11 @@ class Track:
     preview_url: str | None = None
     is_explicit: bool = False
     popularity: int = 0
+    item_type: str = "track"
+    item_count: int = 0
+    album_tracks: list["Track"] = field(default_factory=list)
+    lyric_match_score: float = 0.0
+    lyric_match_text: str = ""
 
     def primary_artist_name(self) -> str:
         if not self.artists:
@@ -68,3 +73,42 @@ class Track:
 
     def copy_url(self) -> str:
         return self.open_url()
+
+    def is_album_result(self) -> bool:
+        return self.item_type == "album"
+
+    def item_type_label(self) -> str:
+        return "Album" if self.is_album_result() else "Track"
+
+    def item_count_label(self) -> str:
+        if self.item_count <= 0:
+            return ""
+        suffix = "track" if self.item_count == 1 else "tracks"
+        return f"{self.item_count} {suffix}"
+
+    def has_lyric_match(self) -> bool:
+        return self.lyric_match_score > 0
+
+    def lyric_match_percent(self) -> int:
+        bounded = max(0.0, min(float(self.lyric_match_score), 1.0))
+        return int(round(bounded * 100))
+
+    def lyric_match_badge_label(self) -> str:
+        if not self.has_lyric_match():
+            return ""
+        return f"{self.lyric_match_percent()}% match"
+
+    def card_badge_label(self) -> str:
+        if self.has_lyric_match():
+            return self.lyric_match_badge_label()
+        if self.is_album_result():
+            return self.item_count_label() or self.item_type_label()
+        if self.duration_ms > 0:
+            return self.duration_label()
+        return self.item_type_label()
+
+    def download_action_label(self) -> str:
+        return "Download"
+
+    def saved_item_label(self) -> str:
+        return "Album" if self.is_album_result() else "Track"

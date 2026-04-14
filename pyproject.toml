@@ -12,6 +12,7 @@ dependencies = [
     "PyQt6>=6.7.1",
     "requests>=2.32.3",
     "beautifulsoup4>=4.12.3",
+    "curl-cffi>=0.15.0",
     "mutagen>=1.47.0",
     "Pillow>=10.4.0",
     "yt-dlp>=2024.8.6",
@@ -27,4 +28,4 @@ package-dir = {"" = "app"}
 where = ["app"]
 
 [tool.setuptools.package-data]
-spotiva = ["ui/qt/assets/*.svg"]
+spotiva = ["ui/qt/assets/*.svg", "ui/qt/assets/*.ico"]

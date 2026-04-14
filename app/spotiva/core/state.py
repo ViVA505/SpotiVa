@@ -4,6 +4,7 @@ from pathlib import Path
 
 from spotiva.core.constants import (
     DEFAULT_DOWNLOAD_DIR_NAME,
+    DEFAULT_LYRIC_SEARCH_ENABLED,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_SEARCH_LIMIT,
     DEFAULT_TITLE_SEARCH_SOURCE,
@@ -18,10 +19,12 @@ class AppState:
         request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
         search_limit: int = DEFAULT_SEARCH_LIMIT,
         title_search_source: str = DEFAULT_TITLE_SEARCH_SOURCE,
+        lyric_search_enabled: bool = DEFAULT_LYRIC_SEARCH_ENABLED,
     ) -> None:
         self.request_timeout = max(5, int(request_timeout))
         self.search_limit = max(1, min(int(search_limit), 20))
         self.title_search_source = normalize_title_search_source(title_search_source)
+        self.lyric_search_enabled = bool(lyric_search_enabled)
         self.download_directory = ""
         self.set_download_directory(download_directory)
 
@@ -30,6 +33,9 @@ class AppState:
 
     def set_title_search_source(self, value: str) -> None:
         self.title_search_source = normalize_title_search_source(value)
+
+    def set_lyric_search_enabled(self, value: bool) -> None:
+        self.lyric_search_enabled = bool(value)
 
     @staticmethod
     def _resolve_download_directory(value: str) -> str:

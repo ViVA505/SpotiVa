@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QSettings, QTimer, Qt
-from PyQt6.QtGui import QColor, QGuiApplication, QLinearGradient, QPainter, QRadialGradient
+from PyQt6.QtGui import (
+    QColor,
+    QGuiApplication,
+    QLinearGradient,
+    QPainter,
+    QRadialGradient,
+)
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -32,18 +38,32 @@ from spotiva.ui.qt.widgets.search_bar import SearchBar
 from spotiva.ui.qt.widgets.settings_page import SettingsPage
 from spotiva.ui.qt.widgets.sidebar import Sidebar
 from spotiva.ui.qt.widgets.track_card import TrackCard
-from spotiva.ui.qt.workers import TrackDownloadWorker, TrackSearchWorker
+from spotiva.ui.qt.workers import (
+    ArtworkResolveWorker,
+    TrackDownloadWorker,
+    TrackSearchWorker,
+)
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, controller: MainWindowController, request_timeout: int, parent=None) -> None:
+    def __init__(
+        self,
+        controller: MainWindowController,
+        request_timeout: int,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._controller = controller
         self._request_timeout = request_timeout
         self._ui_settings = QSettings(APP_NAME, APP_NAME)
         self._restore_title_search_source()
+        self._restore_lyric_search_enabled()
         self._search_worker = None
         self._download_worker = None
+        self._artwork_workers: list[ArtworkResolveWorker] = []
+        self._artwork_requests_in_flight: set[str] = set()
+        self._resolved_artwork_urls: dict[str, str] = {}
+        self._selected_track_id = ""
         self._track_cards = []
         self._intro_started = False
         self._intro_animations = []
@@ -113,19 +133,31 @@ class MainWindow(QMainWindow):
         gradient.setColorAt(1.0, third)
         painter.fillRect(self.rect(), gradient)
 
-        glow_top = QRadialGradient(self.width() * 0.22, self.height() * 0.1, self.width() * 0.42)
+        glow_top = QRadialGradient(
+            self.width() * 0.22,
+            self.height() * 0.1,
+            self.width() * 0.42,
+        )
         glow_top.setColorAt(0.0, QColor(46, 123, 86, 90))
         glow_top.setColorAt(0.45, QColor(46, 123, 86, 28))
         glow_top.setColorAt(1.0, QColor(46, 123, 86, 0))
         painter.fillRect(self.rect(), glow_top)
 
-        glow_right = QRadialGradient(self.width() * 0.88, self.height() * 0.18, self.width() * 0.36)
+        glow_right = QRadialGradient(
+            self.width() * 0.88,
+            self.height() * 0.18,
+            self.width() * 0.36,
+        )
         glow_right.setColorAt(0.0, QColor(96, 118, 103, 44))
         glow_right.setColorAt(0.55, QColor(96, 118, 103, 14))
         glow_right.setColorAt(1.0, QColor(96, 118, 103, 0))
         painter.fillRect(self.rect(), glow_right)
 
-        glow_bottom = QRadialGradient(self.width() * 0.72, self.height() * 0.95, self.width() * 0.46)
+        glow_bottom = QRadialGradient(
+            self.width() * 0.72,
+            self.height() * 0.95,
+            self.width() * 0.46,
+        )
         glow_bottom.setColorAt(0.0, QColor(34, 82, 60, 44))
         glow_bottom.setColorAt(0.5, QColor(34, 82, 60, 15))
         glow_bottom.setColorAt(1.0, QColor(34, 82, 60, 0))
@@ -149,10 +181,15 @@ class MainWindow(QMainWindow):
         self._results_panel.setMinimumWidth(420)
         self._splitter.addWidget(self._results_panel)
 
-        self._detail_panel = DetailPanel(request_timeout=self._request_timeout, parent=self._splitter)
+        self._detail_panel = DetailPanel(
+            request_timeout=self._request_timeout,
+            parent=self._splitter,
+        )
         self._detail_panel.copy_requested.connect(self._copy_link_to_clipboard)
         self._detail_panel.download_requested.connect(self._start_download)
-        self._detail_panel.download_directory_requested.connect(self._choose_download_directory)
+        self._detail_panel.download_directory_requested.connect(
+            self._choose_download_directory
+        )
         self._splitter.addWidget(self._detail_panel)
 
         self._splitter.setStretchFactor(0, 3)
@@ -167,10 +204,16 @@ class MainWindow(QMainWindow):
         self._settings_page = SettingsPage(
             title_source=self._controller.title_search_source(),
             title_source_options=self._controller.available_title_sources(),
+            lyric_search_enabled=self._controller.lyric_search_enabled(),
             parent=self,
         )
         self._settings_page.back_requested.connect(lambda: self._open_page("search"))
-        self._settings_page.title_source_changed.connect(self._apply_title_source_change)
+        self._settings_page.title_source_changed.connect(
+            self._apply_title_source_change
+        )
+        self._settings_page.lyric_search_changed.connect(
+            self._apply_lyric_search_change
+        )
         self._pages["settings"] = self._settings_page
         return self._settings_page
 
@@ -210,8 +253,13 @@ class MainWindow(QMainWindow):
 
         self._results_scroll = QScrollArea(panel)
         self._results_scroll.setWidgetResizable(True)
-        self._results_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._results_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._results_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._results_scroll.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         self._results_host = QWidget(self._results_scroll)
         self._results_layout = QVBoxLayout(self._results_host)
@@ -237,7 +285,10 @@ class MainWindow(QMainWindow):
             self._show_results_state()
             if not self._controller.is_ready():
                 self._set_status(self._controller.startup_status())
-                self._show_empty_state("Search unavailable", self._controller.onboarding_text())
+                self._show_empty_state(
+                    "Search unavailable",
+                    self._controller.onboarding_text(),
+                )
                 return
             self._set_status("")
             return
@@ -245,13 +296,18 @@ class MainWindow(QMainWindow):
         self._search_bar.setDisabled(True)
         self._set_status(self._controller.startup_status())
         self._show_empty_state("Search unavailable", self._controller.onboarding_text())
-        self._detail_panel.show_message("Search unavailable", self._controller.onboarding_text())
+        self._detail_panel.show_message(
+            "Search unavailable",
+            self._controller.onboarding_text(),
+        )
         self._set_detail_panel_visible(False)
 
     def _start_search(self, query: str) -> None:
         normalized = query.strip()
         if not normalized:
-            self._show_error("Enter a song title or paste a Spotify track link.")
+            self._show_error(
+                "Enter a track title, album title, lyric line, or paste a Spotify link."
+            )
             return
 
         self._search_bar.set_busy(True)
@@ -261,20 +317,35 @@ class MainWindow(QMainWindow):
         self._show_loading_state()
         self._detail_panel.show_placeholder()
         self._set_detail_panel_visible(False)
+        self._resolved_artwork_urls.clear()
+        self._selected_track_id = ""
 
         self._search_worker = TrackSearchWorker(self._controller, normalized, self)
-        self._search_worker.completed.connect(lambda tracks: self._handle_search_success(normalized, tracks))
+        self._search_worker.completed.connect(
+            lambda tracks, artwork_payloads: self._handle_search_success(
+                normalized,
+                tracks,
+                artwork_payloads,
+            )
+        )
         self._search_worker.failed.connect(self._handle_search_error)
         self._search_worker.finished.connect(lambda: self._search_bar.set_busy(False))
         self._search_worker.start()
 
-    def _handle_search_success(self, query: str, tracks: list[Track]) -> None:
+    def _handle_search_success(
+        self,
+        query: str,
+        tracks: list[Track],
+        artwork_payloads: dict[str, bytes],
+    ) -> None:
         if not tracks:
             self._set_status("")
             self._set_results_summary("")
             self._show_empty_state(
                 "",
-                f"Nothing found on {self._controller.title_search_source_label()}. Try a more precise title.",
+                "Nothing found on "
+                f"{self._controller.title_search_source_label()}. "
+                "Try a more precise track title, album title, or lyric line.",
             )
             self._clear_results()
             self._detail_panel.show_placeholder()
@@ -282,8 +353,10 @@ class MainWindow(QMainWindow):
             return
 
         self._set_status("")
-        self._set_results_summary("")
+        self._set_results_summary(self._controller.result_summary(query, tracks))
+        self._detail_panel.prime_artwork_payloads(artwork_payloads)
         self._populate_results(tracks)
+        self._prime_album_artwork(tracks)
         self._show_results_state()
         self._select_track(tracks[0])
 
@@ -307,10 +380,15 @@ class MainWindow(QMainWindow):
         self._results_layout.addStretch()
 
     def _select_track(self, track: Track) -> None:
+        self._selected_track_id = track.track_id
         for card in self._track_cards:
             card.set_active(card.track.track_id == track.track_id)
         self._set_detail_panel_visible(True)
         self._detail_panel.show_track(track)
+        prefetched_url = self._resolved_artwork_urls.get(track.track_id, "")
+        if prefetched_url and not track.best_image_url():
+            self._detail_panel.show_resolved_artwork(track.track_id, prefetched_url)
+        self._maybe_resolve_selected_artwork(track)
 
     def _clear_results(self) -> None:
         self._track_cards.clear()
@@ -338,7 +416,9 @@ class MainWindow(QMainWindow):
         self._download_worker.progressed.connect(self._handle_download_progress)
         self._download_worker.completed.connect(self._handle_download_success)
         self._download_worker.failed.connect(self._handle_download_error)
-        self._download_worker.finished.connect(lambda: self._detail_panel.set_download_busy(False))
+        self._download_worker.finished.connect(
+            lambda: self._detail_panel.set_download_busy(False)
+        )
         self._download_worker.start()
 
     def _handle_download_progress(self, bytes_written: int, total_bytes: int) -> None:
@@ -349,10 +429,68 @@ class MainWindow(QMainWindow):
         downloaded_mb = bytes_written / (1024 * 1024)
         self._set_status(f"Downloading... {downloaded_mb:.1f} MB")
 
-    def _handle_download_success(self, file_path: str) -> None:
+    def _handle_download_success(self, track: Track, file_path: str) -> None:
         _ = Path(file_path).name
         self._set_status("")
-        QMessageBox.information(self, APP_NAME, f"Track saved to:\n{file_path}")
+        QMessageBox.information(
+            self,
+            APP_NAME,
+            f"{track.saved_item_label()} saved to:\n{file_path}",
+        )
+
+    def _maybe_resolve_selected_artwork(self, track: Track) -> None:
+        if track.best_image_url() or not track.is_album_result():
+            return
+        if track.track_id in self._artwork_requests_in_flight:
+            return
+
+        worker = ArtworkResolveWorker(self._controller, track, self)
+        self._artwork_workers.append(worker)
+        self._artwork_requests_in_flight.add(track.track_id)
+        worker.completed.connect(self._handle_artwork_resolved)
+        worker.failed.connect(self._handle_artwork_resolution_failed)
+        worker.finished.connect(
+            lambda track_id=track.track_id, current_worker=worker: (
+                self._cleanup_artwork_worker(track_id, current_worker)
+            )
+        )
+        worker.start()
+
+    def _handle_artwork_resolved(self, track_id: str, artwork_url: str) -> None:
+        self._resolved_artwork_urls[track_id] = artwork_url
+        self._detail_panel.prefetch_artwork_url(artwork_url)
+        if track_id == self._selected_track_id:
+            self._detail_panel.show_resolved_artwork(track_id, artwork_url)
+
+    def _handle_artwork_resolution_failed(self, track_id: str, message: str) -> None:
+        _ = track_id
+        _ = message
+
+    def _cleanup_artwork_worker(
+        self,
+        track_id: str,
+        worker: ArtworkResolveWorker,
+    ) -> None:
+        self._artwork_requests_in_flight.discard(track_id)
+        if worker in self._artwork_workers:
+            self._artwork_workers.remove(worker)
+        worker.deleteLater()
+
+    def _prime_album_artwork(self, tracks: list[Track], limit: int = 6) -> None:
+        primed = 0
+        for track in tracks:
+            if primed >= max(1, limit):
+                break
+            if track.best_image_url() or not track.is_album_result():
+                continue
+            if track.track_id in self._resolved_artwork_urls:
+                self._detail_panel.prefetch_artwork_url(
+                    self._resolved_artwork_urls[track.track_id]
+                )
+                primed += 1
+                continue
+            self._maybe_resolve_selected_artwork(track)
+            primed += 1
 
     def _handle_download_error(self, message: str) -> None:
         self._set_status("")
@@ -390,12 +528,31 @@ class MainWindow(QMainWindow):
         self._nav_drawer.set_current_page(page_name)
         if page_name == "settings":
             self._settings_page.set_title_source(self._controller.title_search_source())
+            self._settings_page.set_lyric_search_enabled(
+                self._controller.lyric_search_enabled()
+            )
 
     def _apply_title_source_change(self, value: str) -> None:
         self._controller.set_title_search_source(value)
-        self._ui_settings.setValue("title_search_source", self._controller.title_search_source())
-        self._sidebar.set_title_source_label(self._controller.title_search_source_label())
+        self._ui_settings.setValue(
+            "title_search_source",
+            self._controller.title_search_source(),
+        )
+        self._sidebar.set_title_source_label(
+            self._controller.title_search_source_label()
+        )
         self._settings_page.set_title_source(self._controller.title_search_source())
+        self._set_status("")
+
+    def _apply_lyric_search_change(self, is_enabled: bool) -> None:
+        self._controller.set_lyric_search_enabled(is_enabled)
+        self._ui_settings.setValue(
+            "lyric_search_enabled",
+            self._controller.lyric_search_enabled(),
+        )
+        self._settings_page.set_lyric_search_enabled(
+            self._controller.lyric_search_enabled()
+        )
         self._set_status("")
 
     def _choose_download_directory(self) -> None:
@@ -413,15 +570,27 @@ class MainWindow(QMainWindow):
         self._set_status("")
 
     def _restore_download_directory(self) -> None:
-        saved_directory = str(self._ui_settings.value("download_directory", "", type=str) or "").strip()
+        saved_directory = str(
+            self._ui_settings.value("download_directory", "", type=str) or ""
+        ).strip()
         if saved_directory:
             self._controller.set_download_directory(saved_directory)
         self._detail_panel.set_download_directory(self._controller.download_directory())
 
     def _restore_title_search_source(self) -> None:
-        saved_source = str(self._ui_settings.value("title_search_source", "", type=str) or "").strip()
+        saved_source = str(
+            self._ui_settings.value("title_search_source", "", type=str) or ""
+        ).strip()
         if saved_source:
             self._controller.set_title_search_source(saved_source)
+
+    def _restore_lyric_search_enabled(self) -> None:
+        saved_enabled = self._ui_settings.value(
+            "lyric_search_enabled",
+            self._controller.lyric_search_enabled(),
+            type=bool,
+        )
+        self._controller.set_lyric_search_enabled(bool(saved_enabled))
 
     def _toggle_nav_drawer(self) -> None:
         self._sync_nav_drawer()

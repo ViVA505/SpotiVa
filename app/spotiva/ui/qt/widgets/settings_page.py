@@ -152,8 +152,15 @@ class TitleSourceSwitcher(QWidget):
 class SettingsPage(QFrame):
     back_requested = pyqtSignal()
     title_source_changed = pyqtSignal(str)
+    lyric_search_changed = pyqtSignal(bool)
 
-    def __init__(self, title_source: str, title_source_options: list[tuple[str, str]], parent=None) -> None:
+    def __init__(
+        self,
+        title_source: str,
+        title_source_options: list[tuple[str, str]],
+        lyric_search_enabled: bool,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPage")
         self._intro_animations: list[QPropertyAnimation] = []
@@ -205,11 +212,35 @@ class SettingsPage(QFrame):
         source_layout.addWidget(self._source_switcher)
 
         layout.addWidget(self._source_card, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self._lyric_card = QFrame(self)
+        self._lyric_card.setObjectName("settingsSurface")
+        self._lyric_card.setMaximumWidth(780)
+        self._lyric_card.setMinimumWidth(460)
+
+        lyric_layout = QVBoxLayout(self._lyric_card)
+        lyric_layout.setContentsMargins(28, 26, 28, 28)
+        lyric_layout.setSpacing(18)
+
+        lyric_label = QLabel("Lyric Search", self._lyric_card)
+        lyric_label.setObjectName("settingsSurfaceTitle")
+        lyric_layout.addWidget(lyric_label)
+
+        self._lyric_switcher = TitleSourceSwitcher(
+            [("enabled", "On"), ("disabled", "Off")],
+            self._lyric_card,
+        )
+        self._lyric_switcher.selected.connect(self._emit_lyric_search_changed)
+        lyric_layout.addWidget(self._lyric_switcher)
+
+        layout.addWidget(self._lyric_card, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch()
 
         self._prepare_intro_effect(self._header)
         self._prepare_intro_effect(self._source_card)
+        self._prepare_intro_effect(self._lyric_card)
         self.set_title_source(title_source)
+        self.set_lyric_search_enabled(lyric_search_enabled)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -217,6 +248,13 @@ class SettingsPage(QFrame):
 
     def set_title_source(self, value: str) -> None:
         self._source_switcher.set_value(value, animated=self.isVisible())
+
+    def set_lyric_search_enabled(self, value: bool) -> None:
+        switch_value = "enabled" if value else "disabled"
+        self._lyric_switcher.set_value(switch_value, animated=self.isVisible())
+
+    def _emit_lyric_search_changed(self, value: str) -> None:
+        self.lyric_search_changed.emit(value == "enabled")
 
     def _prepare_intro_effect(self, widget: QWidget) -> None:
         effect = QGraphicsOpacityEffect(widget)
@@ -229,7 +267,11 @@ class SettingsPage(QFrame):
             animation.stop()
         self._intro_animations.clear()
 
-        for delay_ms, widget in ((0, self._header), (90, self._source_card)):
+        for delay_ms, widget in (
+            (0, self._header),
+            (90, self._source_card),
+            (170, self._lyric_card),
+        ):
             effect = self._intro_effects[widget]
             effect.setOpacity(0.0)
 

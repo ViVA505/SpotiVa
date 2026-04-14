@@ -21,10 +21,14 @@ class ResolveTrackInputUseCase:
     def execute(self, value: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[Track]:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("Enter a track title or paste a Spotify track link.")
+            raise ValueError(
+                "Enter a track or album title, or paste a Spotify link."
+            )
 
         if self._link_parser.looks_like_spotify_link(normalized):
             resource = self._link_parser.parse(normalized)
+            if resource.resource_type == "album":
+                return [self._repository.get_album_by_id(resource.resource_id)]
             return [self._repository.get_track_by_id(resource.resource_id)]
 
         return self._search_tracks_use_case.execute(normalized, limit)

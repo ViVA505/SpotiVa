@@ -7,7 +7,11 @@ from spotiva.infra.spotify.track_mapper import SpotifyTrackMapper
 
 
 class SpotifyCatalogRepositoryImpl(SpotifyCatalogRepository):
-    def __init__(self, api_client: SpotifyApiClient, track_mapper: SpotifyTrackMapper) -> None:
+    def __init__(
+        self,
+        api_client: SpotifyApiClient,
+        track_mapper: SpotifyTrackMapper,
+    ) -> None:
         self._api_client = api_client
         self._track_mapper = track_mapper
 
@@ -18,3 +22,7 @@ class SpotifyCatalogRepositoryImpl(SpotifyCatalogRepository):
     def get_track_by_id(self, track_id: str) -> Track:
         payload = self._api_client.get_track(track_id)
         return self._track_mapper.map_track(payload)
+
+    def get_album_by_id(self, album_id: str) -> Track:
+        payload = self._api_client.get_album(album_id)
+        return self._track_mapper.map_album(payload)

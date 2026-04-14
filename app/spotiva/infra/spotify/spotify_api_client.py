@@ -4,7 +4,11 @@ from collections.abc import Mapping
 
 import requests
 
-from spotiva.core.constants import DEFAULT_MARKET, DEFAULT_REQUEST_TIMEOUT, SPOTIFY_API_BASE_URL
+from spotiva.core.constants import (
+    DEFAULT_MARKET,
+    DEFAULT_REQUEST_TIMEOUT,
+    SPOTIFY_API_BASE_URL,
+)
 from spotiva.core.exceptions import SpotifyApiError
 from spotiva.infra.spotify.token_provider import SpotifyAccessTokenProvider
 
@@ -38,6 +42,12 @@ class SpotifyApiClient:
     def get_track(self, track_id: str) -> Mapping[str, object]:
         return self._request(
             f"tracks/{track_id}",
+            params={"market": self._market},
+        )
+
+    def get_album(self, album_id: str) -> Mapping[str, object]:
+        return self._request(
+            f"albums/{album_id}",
             params={"market": self._market},
         )
 

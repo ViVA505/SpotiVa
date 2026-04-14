@@ -15,13 +15,17 @@ class SearchDownloadableTracksUseCase:
         limit: int = DEFAULT_SEARCH_LIMIT,
         artist_name: str = "",
         source: str = DEFAULT_TITLE_SEARCH_SOURCE,
+        lyric_search_enabled: bool = True,
     ) -> list[Track]:
         normalized = query.strip()
         if not normalized:
-            raise ValueError("Enter a track title or paste a Spotify track link.")
+            raise ValueError(
+                "Enter a track or album title, or paste a Spotify link."
+            )
         return self._repository.search_tracks(
             query=normalized,
             limit=limit,
             artist_name=artist_name.strip(),
             source=source,
+            lyric_search_enabled=lyric_search_enabled,
         )

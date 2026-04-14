@@ -13,3 +13,7 @@ class SpotifyCatalogRepository(ABC):
     @abstractmethod
     def get_track_by_id(self, track_id: str) -> Track:
         raise NotImplementedError
+
+    @abstractmethod
+    def get_album_by_id(self, album_id: str) -> Track:
+        raise NotImplementedError

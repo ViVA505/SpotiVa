@@ -17,7 +17,9 @@ class SearchBar(QWidget):
         layout.setSpacing(12)
 
         self._input = QLineEdit(self)
-        self._input.setPlaceholderText("Paste a Spotify track link or enter a song title")
+        self._input.setPlaceholderText(
+            "Paste a Spotify link, track title, album title, or lyric line"
+        )
         self._input.returnPressed.connect(self._emit_search)
         layout.addWidget(self._input, 1)
 

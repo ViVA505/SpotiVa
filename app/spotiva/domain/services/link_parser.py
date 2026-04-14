@@ -45,16 +45,27 @@ class SpotifyLinkParser:
 
         path_parts = [part for part in parsed_url.path.split("/") if part]
         if not path_parts:
-            raise InvalidSpotifyLinkError("The Spotify URL does not contain a resource path.")
+            raise InvalidSpotifyLinkError(
+                "The Spotify URL does not contain a resource path."
+            )
 
         resource_index = None
         for index, part in enumerate(path_parts):
-            if part.lower() in {"track", "album", "artist", "playlist", "episode", "show"}:
+            if part.lower() in {
+                "track",
+                "album",
+                "artist",
+                "playlist",
+                "episode",
+                "show",
+            }:
                 resource_index = index
                 break
 
         if resource_index is None or resource_index + 1 >= len(path_parts):
-            raise InvalidSpotifyLinkError("The Spotify URL does not contain a valid resource ID.")
+            raise InvalidSpotifyLinkError(
+                "The Spotify URL does not contain a valid resource ID."
+            )
 
         resource_type = path_parts[resource_index].lower()
         resource_id = path_parts[resource_index + 1].strip()
@@ -65,6 +76,6 @@ class SpotifyLinkParser:
             raise InvalidSpotifyLinkError("The Spotify resource ID is missing.")
         if resource_type not in SUPPORTED_RESOURCE_TYPES:
             raise UnsupportedSpotifyResourceError(
-                f"Only Spotify track links are supported right now, got '{resource_type}'."
+                f"Spotify '{resource_type}' links are not supported right now."
             )
         return SpotifyResource(resource_type=resource_type, resource_id=resource_id)

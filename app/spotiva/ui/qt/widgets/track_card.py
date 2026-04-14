@@ -37,16 +37,26 @@ class TrackCard(QFrame):
         title.setWordWrap(True)
         content_layout.addWidget(title)
 
-        subtitle = QLabel(f"{track.artist_line()} | {track.album.name}", self)
+        subtitle_parts = [track.artist_line()]
+        if track.has_lyric_match():
+            subtitle_parts.append(f"Genius {track.lyric_match_badge_label().lower()}")
+        if track.is_album_result():
+            subtitle_parts.append(track.item_type_label())
+            if track.item_count_label():
+                subtitle_parts.append(track.item_count_label())
+        elif track.album.name:
+            subtitle_parts.append(track.album.name)
+
+        subtitle = QLabel(" | ".join(part for part in subtitle_parts if part), self)
         subtitle.setObjectName("cardSubtitle")
         subtitle.setWordWrap(True)
         content_layout.addWidget(subtitle)
 
         root_layout.addLayout(content_layout, 1)
 
-        duration = QLabel(track.duration_label(), self)
-        duration.setObjectName("durationLabel")
-        root_layout.addWidget(duration, alignment=Qt.AlignmentFlag.AlignTop)
+        badge = QLabel(track.card_badge_label(), self)
+        badge.setObjectName("durationLabel")
+        root_layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
 
     def set_active(self, is_active: bool) -> None:
         self._accent.setVisible(is_active)
