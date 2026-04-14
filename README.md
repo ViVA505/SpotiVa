@@ -25,7 +25,7 @@ SpotiVa is a desktop app for looking up and downloading tracks.
 
 ## Setup
 
-1. Install FFmpeg and make sure `ffmpeg` is available in your system `PATH`.
+1. Install FFmpeg and make sure `ffmpeg` is available in your system `PATH` (this is important even for the release.).
 2. Install dependencies:
 
 ```bash
