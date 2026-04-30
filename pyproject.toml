@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spotiva"
-version = "0.1.0"
-description = "Modern app - Spotify track explorer"
+version = "1.0.0"
+description = "Track explorer"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,4 +28,4 @@ package-dir = {"" = "app"}
 where = ["app"]
 
 [tool.setuptools.package-data]
-spotiva = ["ui/qt/assets/*.svg", "ui/qt/assets/*.ico"]
+spotiva = ["ui/qt/assets/*.svg", "ui/qt/assets/*.ico", "ui/qt/assets/*.png"]
