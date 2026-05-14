@@ -109,7 +109,8 @@ class YtDlpAssetRepository(AudioAssetRepository):
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
-            "concurrent_fragment_downloads": 4,
+            "windowsfilenames": True,
+            "concurrent_fragment_downloads": 8,
             "fragment_retries": 3,
             "file_access_retries": 3,
             "retries": 3,
@@ -181,6 +182,8 @@ class YtDlpAssetRepository(AudioAssetRepository):
 
     def _resolve_download_track(self, track: Track) -> Track:
         excluded_urls: set[str] = set()
+        if self._can_use_direct_download(track):
+            return track
         if track.download_url and self._is_reliable_direct_download_track(track):
             return track
         if track.download_url:
@@ -188,6 +191,8 @@ class YtDlpAssetRepository(AudioAssetRepository):
 
         matched_track = self._resolve_best_download_match(track, excluded_urls)
         if matched_track is None or not matched_track.download_url:
+            if self._is_spotify_sourced(track):
+                raise self._spotify_direct_download_error()
             raise DownloadError(
                 "Could not find a reliable audio match for the selected track."
             )
@@ -297,6 +302,8 @@ class YtDlpAssetRepository(AudioAssetRepository):
         return tracks
 
     def _enrich_track_metadata(self, track: Track) -> Track:
+        if self._can_skip_direct_metadata_refresh(track):
+            return track
         if not self._needs_metadata_refresh(track):
             return track
 
@@ -381,9 +388,9 @@ class YtDlpAssetRepository(AudioAssetRepository):
         track: Track,
         excluded_urls: set[str] | None = None,
     ) -> Track | None:
-        requested_artist = track.artist_line().strip()
+        artist_variants = self._artist_search_variants(track)
         query_variants = self._matcher.build_query_variants(track.name)
-        source_order = self._download_source_order()
+        source_order = self._download_source_order(track)
         best_match: Track | None = None
         best_score = 0.0
         normalized_excluded_urls = {
@@ -393,34 +400,133 @@ class YtDlpAssetRepository(AudioAssetRepository):
         }
 
         for source in source_order:
-            for query in query_variants:
-                candidates = self._search_download_candidates(
-                    query=query,
-                    artist_name=requested_artist,
-                    source=source,
-                )
-                for candidate in candidates:
-                    if candidate.is_album_result() or not candidate.download_url:
-                        continue
-                    if candidate.open_url().casefold() in normalized_excluded_urls:
-                        continue
-                    match_score = self._matcher.score(
+            for artist_name in artist_variants:
+                for query in query_variants:
+                    candidate, match_score = self._resolve_best_search_target_match(
                         requested_track=track,
-                        candidate_track=candidate,
+                        query=query,
+                        artist_name=artist_name,
                         source=source,
                         preferred_source=source_order[0],
+                        excluded_urls=normalized_excluded_urls,
                     )
-                    if not self._matcher.is_reliable_match(
-                        requested_track=track,
-                        candidate_track=candidate,
-                        score=match_score,
-                    ):
-                        continue
-                    if match_score <= best_score:
+                    if candidate is None or match_score <= best_score:
                         continue
                     best_match = candidate
                     best_score = match_score
+                    if best_score >= 0.96:
+                        return best_match
         return best_match
+
+    def _artist_search_variants(self, track: Track) -> list[str]:
+        if self._is_spotify_sourced(track):
+            return self._unique_targets([track.artist_line()])
+
+        artists = [track.artist_line(), track.primary_artist_name()]
+        artists.extend(artist.name for artist in track.artists)
+        return self._unique_targets(artists)
+
+    def _can_use_direct_download(self, track: Track) -> bool:
+        if not track.download_url:
+            return False
+        if self._is_spotify_sourced(track):
+            return False
+        return not self._needs_title_refresh(track) and not self._needs_artist_refresh(
+            track
+        )
+
+    def _can_skip_direct_metadata_refresh(self, track: Track) -> bool:
+        if not track.download_url:
+            return False
+        return not self._needs_title_refresh(track) and not self._needs_artist_refresh(
+            track
+        )
+
+    def _resolve_best_search_target_match(
+        self,
+        requested_track: Track,
+        query: str,
+        artist_name: str,
+        source: str,
+        preferred_source: str,
+        excluded_urls: set[str],
+    ) -> tuple[Track | None, float]:
+        best_match: Track | None = None
+        best_score = 0.0
+        seen_urls: set[str] = set()
+        search_targets = self._build_search_targets(
+            query=query,
+            artist_name=artist_name,
+            source=source,
+        )
+        if self._is_spotify_sourced(requested_track):
+            search_targets = search_targets[:1]
+
+        for target in search_targets:
+            for candidate in self._search_download_candidates_for_target(
+                target,
+                source,
+            ):
+                if candidate.is_album_result() or not candidate.download_url:
+                    continue
+                url_key = candidate.open_url().casefold()
+                if not url_key or url_key in seen_urls or url_key in excluded_urls:
+                    continue
+                seen_urls.add(url_key)
+
+                match_score = self._matcher.score(
+                    requested_track=requested_track,
+                    candidate_track=candidate,
+                    source=source,
+                    preferred_source=preferred_source,
+                )
+                if not self._matcher.is_reliable_match(
+                    requested_track=requested_track,
+                    candidate_track=candidate,
+                    score=match_score,
+                ):
+                    continue
+                if match_score <= best_score:
+                    continue
+                best_match = candidate
+                best_score = match_score
+                if best_score >= 0.96:
+                    return best_match, best_score
+
+            if best_match is not None:
+                return best_match, best_score
+
+        return best_match, best_score
+
+    def _search_download_candidates_for_target(
+        self,
+        target: str,
+        source: str,
+    ) -> list[Track]:
+        ydl_options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "ignoreerrors": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_options) as ydl:
+                payload = ydl.extract_info(target, download=False)
+        except Exception:
+            return []
+
+        entries = payload.get("entries") if isinstance(payload, Mapping) else None
+        if not isinstance(entries, list):
+            return []
+
+        candidates: list[Track] = []
+        for entry in entries:
+            candidate = self._map_search_candidate(entry, source)
+            if candidate is not None:
+                candidates.append(candidate)
+        return candidates
 
     def _search_download_candidates(
         self,
@@ -529,7 +635,10 @@ class YtDlpAssetRepository(AudioAssetRepository):
         )
         return self._download_mapper.map_result(item)
 
-    def _download_source_order(self) -> list[str]:
+    def _download_source_order(self, track: Track | None = None) -> list[str]:
+        if track is not None and self._is_spotify_sourced(track):
+            return ["youtube"]
+
         preferred_source = self._state.title_search_source
         if preferred_source == "soundcloud":
             return ["soundcloud", "youtube"]
@@ -548,7 +657,7 @@ class YtDlpAssetRepository(AudioAssetRepository):
             requested_track=track,
             candidate_track=candidate_track,
             source=source,
-            preferred_source=self._download_source_order()[0],
+            preferred_source=self._download_source_order(track)[0],
         )
         return self._matcher.is_reliable_match(
             requested_track=track,
@@ -604,12 +713,28 @@ class YtDlpAssetRepository(AudioAssetRepository):
 
     def _wrap_download_error(self, error: Exception) -> DownloadError:
         message = str(error).strip() or error.__class__.__name__
+        if "drm" in message.lower() and "spotify" in message.lower():
+            return self._spotify_direct_download_error()
         if "ffmpeg" in message.lower():
             return DownloadError(
                 "FFmpeg is required to convert downloads to MP3. "
                 "Repair the app install or add FFmpeg to PATH."
             )
         return DownloadError(f"Could not download the selected item: {message}")
+
+    @staticmethod
+    def _is_spotify_sourced(track: Track) -> bool:
+        return bool(track.spotify_url) or track.source_label.casefold().startswith(
+            "spotify"
+        )
+
+    @staticmethod
+    def _spotify_direct_download_error() -> DownloadError:
+        return DownloadError(
+            "Spotify full-track downloads are not available from public Spotify "
+            "links. Spotify protects full audio with DRM; only short previews are "
+            "exposed publicly."
+        )
 
     def _needs_metadata_refresh(self, track: Track) -> bool:
         return (

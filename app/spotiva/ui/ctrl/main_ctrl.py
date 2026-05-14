@@ -148,12 +148,7 @@ class MainWindowController:
             self._spotify_download_use_case
             and self._spotify_download_use_case.looks_like_spotify_link(normalized)
         ):
-            if tracks and tracks[0].is_album_result():
-                return (
-                    "Spotify album ready. Download will search YouTube for each "
-                    "album track automatically."
-                )
-            return "Spotify track ready. Download will search YouTube automatically."
+            return ""
         if tracks and tracks[0].has_lyric_match():
             if total == 1:
                 return (

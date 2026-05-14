@@ -49,6 +49,7 @@ from spotiva.ui.qt.workers import (
 
 _RESULT_THUMBNAIL_WARMUP_LIMIT = 4
 _RESULT_REVEAL_MAX_WAIT_MS = 520
+_ALBUM_ARTWORK_REVEAL_MAX_WAIT_MS = 1800
 
 
 @dataclass
@@ -540,7 +541,20 @@ class MainWindow(QMainWindow):
             self._reveal_pending_results()
             return
 
-        self._results_reveal_timer.start(_RESULT_REVEAL_MAX_WAIT_MS)
+        wait_ms = (
+            _ALBUM_ARTWORK_REVEAL_MAX_WAIT_MS
+            if self._has_pending_album_artwork()
+            else _RESULT_REVEAL_MAX_WAIT_MS
+        )
+        self._results_reveal_timer.start(wait_ms)
+
+    def _has_pending_album_artwork(self) -> bool:
+        for card in self._track_cards[:_RESULT_THUMBNAIL_WARMUP_LIMIT]:
+            if card.track.track_id not in self._pending_thumbnail_track_ids:
+                continue
+            if card.track.is_album_result() and not self._card_artwork_url(card):
+                return True
+        return False
 
     def _handle_result_thumbnail_ready(self, track_id: str) -> None:
         if track_id not in self._pending_thumbnail_track_ids:
@@ -562,8 +576,11 @@ class MainWindow(QMainWindow):
             self._select_track(track)
 
     def _warm_result_thumbnail(self, card: TrackCard) -> None:
-        artwork_url = card.track.best_image_url()
+        artwork_url = self._card_artwork_url(card)
         if not artwork_url:
+            if card.track.is_album_result():
+                self._maybe_resolve_selected_artwork(card.track)
+                return
             card.thumbnail_ready.emit(card.track.track_id)
             return
 
@@ -575,7 +592,7 @@ class MainWindow(QMainWindow):
         self._artwork_cache.request(artwork_url)
 
     def _restore_cached_result_thumbnail(self, card: TrackCard) -> None:
-        artwork_url = card.track.best_image_url()
+        artwork_url = self._card_artwork_url(card)
         if not artwork_url:
             return
 
@@ -586,13 +603,19 @@ class MainWindow(QMainWindow):
     def _handle_artwork_payload_loaded(self, artwork_url: str, payload: bytes) -> None:
         self._detail_panel.prime_artwork_payloads({artwork_url: payload})
         for card in self._track_cards:
-            if card.track.best_image_url() == artwork_url:
+            if self._card_artwork_url(card) == artwork_url:
                 card.show_thumbnail_payload(payload)
 
     def _handle_artwork_payload_failed(self, artwork_url: str) -> None:
         for card in self._track_cards:
-            if card.track.best_image_url() == artwork_url:
+            if self._card_artwork_url(card) == artwork_url:
                 card.thumbnail_ready.emit(card.track.track_id)
+
+    def _card_artwork_url(self, card: TrackCard) -> str:
+        return (
+            card.track.best_image_url()
+            or self._resolved_artwork_urls.get(card.track.track_id, "")
+        )
 
     def _cancel_pending_results_reveal(self) -> None:
         if self._results_reveal_timer.isActive():
@@ -702,12 +725,28 @@ class MainWindow(QMainWindow):
     def _handle_artwork_resolved(self, track_id: str, artwork_url: str) -> None:
         self._resolved_artwork_urls[track_id] = artwork_url
         self._detail_panel.prefetch_artwork_url(artwork_url)
+        self._update_resolved_result_thumbnail(track_id, artwork_url)
         if track_id == self._selected_track_id:
             self._detail_panel.show_resolved_artwork(track_id, artwork_url)
+
+    def _update_resolved_result_thumbnail(
+        self,
+        track_id: str,
+        artwork_url: str,
+    ) -> None:
+        payload = self._artwork_cache.payload(artwork_url)
+        for card in self._track_cards:
+            if card.track.track_id != track_id:
+                continue
+            if payload:
+                card.show_thumbnail_payload(payload)
+            else:
+                self._artwork_cache.request(artwork_url)
 
     def _handle_artwork_resolution_failed(self, track_id: str, message: str) -> None:
         _ = track_id
         _ = message
+        self._handle_result_thumbnail_ready(track_id)
 
     def _cleanup_artwork_worker(
         self,

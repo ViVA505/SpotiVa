@@ -16,6 +16,10 @@ SpotiVa is a desktop app for looking up and downloading tracks.
 ![img.png](photo/img.png)
 ![img_1.png](photo/img_1.png)
 ![img_2.png](photo/img_2.png)
+![img.png](photo/img_3.png)ф
+![img_1.png](photo/img_4.png)
+![img_2.png](photo/img_5.png)
+
 
 ***
 

@@ -37,35 +37,55 @@ class SpotifyPublicPreviewClient(SpotifyPreviewRepository):
         page_html = self._request_page(spotify_url)
         page_data = self._extract_page_metadata(page_html)
         oembed_data = self._request_oembed(spotify_url)
+        iframe_url = str(oembed_data.get("iframe_url", "")).strip()
+        embed_html = self._request_embed_page(
+            iframe_url or f"https://open.spotify.com/embed/track/{track_id}"
+        )
+        entity = self._extract_embed_entity(embed_html)
 
         title = (
-            page_data["title"]
+            str(entity.get("title", "")).strip()
+            or str(entity.get("name", "")).strip()
+            or page_data["title"]
             or str(oembed_data.get("title", "Spotify track")).strip()
             or "Spotify track"
         )
-        thumbnail_url = page_data["image_url"] or str(
-            oembed_data.get("thumbnail_url", "")
-        ).strip()
-        artist_name = page_data["artist"] or self._extract_artist_name(page_html)
+        thumbnail_url = (
+            self._extract_embed_image_url(entity)
+            or page_data["image_url"]
+            or str(oembed_data.get("thumbnail_url", "")).strip()
+        )
+        artists = self._extract_embed_artists(entity)
+        if not artists:
+            artist_name = page_data["artist"] or self._extract_artist_name(page_html)
+            artists = self._build_artists(artist_name, spotify_url)
         album_name = page_data["album"] or "Spotify"
+        release_date = page_data["release_date"] or self._extract_release_date(entity)
+        duration_ms = self._normalize_duration_ms(entity.get("duration"))
+        if duration_ms <= 0:
+            duration_ms = self._extract_meta_duration_ms(page_html)
+        preview_url = self._to_optional_string(
+            self._as_mapping(entity.get("audioPreview")).get("url")
+        )
 
         album = Album(
             name=album_name,
-            release_date=page_data["release_date"],
+            release_date=release_date,
             images=[TrackImage(url=thumbnail_url)] if thumbnail_url else [],
             spotify_url=spotify_url,
         )
-        artist = Artist(name=artist_name or "Unknown artist", spotify_url=spotify_url)
 
         return Track(
             track_id=track_id,
             name=title,
-            artists=[artist],
+            artists=artists,
             album=album,
-            duration_ms=0,
+            duration_ms=duration_ms,
             spotify_url=spotify_url,
             external_url=spotify_url,
             source_label="Spotify",
+            preview_url=preview_url,
+            is_explicit=self._is_explicit_entity(entity),
         )
 
     def resolve_album(self, spotify_url: str, album_id: str) -> Track:
@@ -490,6 +510,67 @@ class SpotifyPublicPreviewClient(SpotifyPreviewRepository):
                 best_url = url
                 best_size = size
         return best_url
+
+    def _extract_embed_artists(self, entity: Mapping[str, object]) -> list[Artist]:
+        raw_artists = entity.get("artists")
+        if not isinstance(raw_artists, list):
+            return []
+
+        artists: list[Artist] = []
+        for item in raw_artists:
+            if not isinstance(item, Mapping):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            artist_uri = str(item.get("uri", "")).strip()
+            artist_id = self._spotify_id_from_uri(artist_uri)
+            artist_url = (
+                f"https://open.spotify.com/artist/{artist_id}" if artist_id else ""
+            )
+            artists.append(Artist(name=name, spotify_url=artist_url))
+        return artists
+
+    def _extract_release_date(self, entity: Mapping[str, object]) -> str:
+        release_date = self._as_mapping(entity.get("releaseDate"))
+        return str(release_date.get("isoString", "")).split("T", maxsplit=1)[0].strip()
+
+    def _extract_meta_duration_ms(self, html: str) -> int:
+        duration_seconds = self._extract_meta_name(html, "music:duration")
+        try:
+            return max(0, int(float(duration_seconds or 0) * 1000))
+        except (TypeError, ValueError):
+            return 0
+
+    def _extract_meta_name(self, html: str, name: str) -> str:
+        if not html:
+            return ""
+        if BeautifulSoup is not None:
+            soup = BeautifulSoup(html, "html.parser")
+            tag = soup.find("meta", attrs={"name": name})
+            if tag:
+                return str(tag.get("content", "")).strip()
+            return ""
+
+        pattern = re.compile(
+            (
+                rf'<meta[^>]+name=["\']{re.escape(name)}["\'][^>]+'
+                rf'content=["\']([^"\']+)["\']'
+            ),
+            re.IGNORECASE,
+        )
+        match = pattern.search(html)
+        if not match:
+            return ""
+        return match.group(1).strip()
+
+    def _is_explicit_entity(self, entity: Mapping[str, object]) -> bool:
+        if bool(entity.get("isExplicit", False)):
+            return True
+        labels = self._as_mapping(entity.get("contentRatings")).get("labels")
+        if not isinstance(labels, list):
+            return False
+        return any(str(label).casefold() == "explicit" for label in labels)
 
     def _build_artists(self, artist_line: str, spotify_url: str) -> list[Artist]:
         normalized = artist_line.strip()
