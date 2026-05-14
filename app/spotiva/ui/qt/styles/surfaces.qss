@@ -1,0 +1,64 @@
+QFrame#shell {
+    background: rgba(9, 11, 11, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 24px;
+}
+
+QFrame#sidebar,
+QFrame#heroCard,
+QFrame#resultsCard,
+QFrame#detailCard,
+QFrame#emptyState {
+    background: rgba(14, 17, 16, 0.74);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 22px;
+}
+
+QFrame#trackCard {
+    background: rgba(15, 18, 17, 0.64);
+    border: 1px solid rgba(255, 255, 255, 0.032);
+    border-radius: 16px;
+    min-height: 68px;
+}
+
+QFrame#trackCard:hover {
+    background: rgba(20, 24, 22, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+QFrame#trackCard[active="true"] {
+    background: rgba(24, 31, 27, 0.86);
+    border: 1px solid rgba(45, 216, 112, 0.18);
+}
+
+QFrame#trackThumbnail {
+    background: rgba(8, 11, 10, 0.86);
+    border: 1px solid rgba(255, 255, 255, 0.045);
+    border-radius: 12px;
+}
+
+QFrame#trackCard:hover QFrame#trackThumbnail {
+    border: 1px solid rgba(255, 255, 255, 0.075);
+}
+
+QFrame#trackCard[active="true"] QFrame#trackThumbnail {
+    border: 1px solid rgba(45, 216, 112, 0.22);
+}
+
+QFrame#artworkFrame {
+    background: transparent;
+    border: none;
+}
+
+QFrame#actionSurface {
+    background: rgba(16, 19, 18, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.045);
+    border-radius: 22px;
+}
+
+QFrame#trackAccent,
+QFrame#accentLine {
+    background: rgba(45, 216, 112, 0.82);
+    border: none;
+    border-radius: 2px;
+}

@@ -3,38 +3,37 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from difflib import SequenceMatcher
 from pathlib import Path
 
 import yt_dlp
 from mutagen.mp3 import MP3
 
 from spotiva.core.exceptions import DownloadError
+from spotiva.core.runtime import resolve_ffmpeg_location
 from spotiva.core.state import AppState
 from spotiva.domain.entities.track import Album, Artist, Track, TrackImage
 from spotiva.domain.repos.audio_repo import AudioAssetRepository
 from spotiva.infra.downloader.audio_tagger import Mp3AudioTagger
+from spotiva.infra.downloader.file_store import (
+    build_unique_directory_path,
+    build_unique_file_path,
+    cleanup_attempt_outputs,
+    normalize_downloaded_file_name,
+    resolve_downloaded_file_path,
+    snapshot_files,
+)
+from spotiva.infra.downloader.matching import DownloadCandidateMatcher
 from spotiva.infra.downloader.models import DownloadSearchResult
+from spotiva.infra.downloader.progress import YtDlpProgressHook
 from spotiva.infra.downloader.track_mapper import DownloadTrackMapper
 
 
 class YtDlpAssetRepository(AudioAssetRepository):
-    _SPACE_RE = re.compile(r"\s+")
-    _PAREN_RE = re.compile(r"\s*[\[(][^)\]]*[\])]\s*")
-    _DERIVATIVE_RE = re.compile(
-        r"\b(?:cover|РєР°РІРµСЂ|remix|bootleg|edit|nightcore|sped up|slowed)\b",
-        re.IGNORECASE,
-    )
-
-    _SHORT_FORM_RE = re.compile(
-        r"\b(?:snippet|preview|teaser|demo|sample|excerpt|clip)\b",
-        re.IGNORECASE,
-    )
-
     def __init__(self, state: AppState, tagger: Mp3AudioTagger) -> None:
         self._state = state
         self._tagger = tagger
         self._download_mapper = DownloadTrackMapper()
+        self._matcher = DownloadCandidateMatcher()
 
     def download_track(
         self,
@@ -54,7 +53,7 @@ class YtDlpAssetRepository(AudioAssetRepository):
         target_directory: Path,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> str:
-        album_directory = self._build_unique_directory_path(
+        album_directory = build_unique_directory_path(
             target_directory,
             album_track,
         )
@@ -100,9 +99,9 @@ class YtDlpAssetRepository(AudioAssetRepository):
     ) -> str:
         download_track = self._resolve_download_track(track)
         resolved_track = self._enrich_track_metadata(download_track)
-        file_path = self._build_unique_file_path(target_directory, resolved_track)
+        file_path = build_unique_file_path(target_directory, resolved_track)
         download_targets = self._build_download_targets(resolved_track)
-        progress_hook = _YtDlpProgressHook(progress_callback)
+        progress_hook = YtDlpProgressHook(progress_callback)
 
         ydl_options = {
             "format": "bestaudio/best",
@@ -123,20 +122,23 @@ class YtDlpAssetRepository(AudioAssetRepository):
                 }
             ],
         }
+        ffmpeg_location = resolve_ffmpeg_location()
+        if ffmpeg_location:
+            ydl_options["ffmpeg_location"] = ffmpeg_location
 
         last_error: Exception | None = None
         download_completed = False
         for download_target in download_targets:
-            existing_files = self._snapshot_files(target_directory)
+            existing_files = snapshot_files(target_directory)
             try:
                 with yt_dlp.YoutubeDL(ydl_options) as ydl:
                     ydl.download([download_target])
             except Exception as error:
                 last_error = error
-                self._cleanup_attempt_outputs(target_directory, existing_files)
+                cleanup_attempt_outputs(target_directory, existing_files)
                 continue
 
-            resolved_file_path = self._resolve_downloaded_file_path(
+            resolved_file_path = resolve_downloaded_file_path(
                 file_path,
                 existing_files,
             )
@@ -144,7 +146,7 @@ class YtDlpAssetRepository(AudioAssetRepository):
                 continue
 
             if resolved_file_path != file_path:
-                resolved_file_path = self._normalize_downloaded_file_name(
+                resolved_file_path = normalize_downloaded_file_name(
                     resolved_file_path,
                     file_path,
                 )
@@ -380,7 +382,7 @@ class YtDlpAssetRepository(AudioAssetRepository):
         excluded_urls: set[str] | None = None,
     ) -> Track | None:
         requested_artist = track.artist_line().strip()
-        query_variants = self._build_query_variants(track.name)
+        query_variants = self._matcher.build_query_variants(track.name)
         source_order = self._download_source_order()
         best_match: Track | None = None
         best_score = 0.0
@@ -402,13 +404,13 @@ class YtDlpAssetRepository(AudioAssetRepository):
                         continue
                     if candidate.open_url().casefold() in normalized_excluded_urls:
                         continue
-                    match_score = self._build_candidate_match_score(
+                    match_score = self._matcher.score(
                         requested_track=track,
                         candidate_track=candidate,
                         source=source,
                         preferred_source=source_order[0],
                     )
-                    if not self._is_reliable_download_match(
+                    if not self._matcher.is_reliable_match(
                         requested_track=track,
                         candidate_track=candidate,
                         score=match_score,
@@ -527,233 +529,11 @@ class YtDlpAssetRepository(AudioAssetRepository):
         )
         return self._download_mapper.map_result(item)
 
-    def _build_candidate_match_score(
-        self,
-        requested_track: Track,
-        candidate_track: Track,
-        source: str,
-        preferred_source: str,
-    ) -> float:
-        requested_title = requested_track.name
-        requested_artist = requested_track.primary_artist_name()
-        candidate_title = candidate_track.name
-        candidate_artist = candidate_track.primary_artist_name()
-
-        title_score = max(
-            self._text_similarity(
-                self._normalize_match_text(requested_title),
-                self._normalize_match_text(candidate_title),
-            ),
-            self._text_similarity(
-                self._compact_match_text(requested_title),
-                self._compact_match_text(candidate_title),
-            ),
-        )
-        artist_score = self._text_similarity(
-            self._compact_match_text(requested_artist),
-            self._compact_match_text(candidate_artist),
-        )
-
-        exact_title_bonus = (
-            0.14
-            if self._compact_match_text(requested_title)
-            and self._compact_match_text(requested_title)
-            == self._compact_match_text(candidate_title)
-            else 0.0
-        )
-        preferred_source_bonus = 0.03 if source == preferred_source else 0.0
-        derivative_penalty = (
-            0.18
-            if self._is_derivative_text(candidate_title)
-            and not self._is_derivative_text(requested_title)
-            else 0.0
-        )
-        short_form_penalty = (
-            0.24
-            if self._is_short_form_text(candidate_title)
-            and not self._is_short_form_text(requested_title)
-            else 0.0
-        )
-        duration_bonus = 0.12 * self._duration_match_score(
-            requested_track.duration_ms,
-            candidate_track.duration_ms,
-        )
-        duration_penalty = (
-            0.32
-            if self._has_duration_mismatch(
-                requested_track.duration_ms,
-                candidate_track.duration_ms,
-            )
-            else 0.0
-        )
-        length_preference_bonus = self._length_preference_bonus(
-            requested_duration_ms=requested_track.duration_ms,
-            candidate_duration_ms=candidate_track.duration_ms,
-            title_score=title_score,
-            artist_score=artist_score,
-        )
-        ultra_short_penalty = self._ultra_short_candidate_penalty(
-            requested_duration_ms=requested_track.duration_ms,
-            candidate_duration_ms=candidate_track.duration_ms,
-            title_score=title_score,
-            artist_score=artist_score,
-        )
-        return max(
-            0.0,
-            min(
-                1.25,
-                (title_score * 0.68)
-                + (artist_score * 0.32)
-                + exact_title_bonus
-                + preferred_source_bonus
-                + duration_bonus
-                + length_preference_bonus
-                - derivative_penalty
-                - short_form_penalty
-                - duration_penalty
-                - ultra_short_penalty
-            ),
-        )
-
-    def _is_reliable_download_match(
-        self,
-        requested_track: Track,
-        candidate_track: Track,
-        score: float,
-    ) -> bool:
-        title_score = max(
-            self._text_similarity(
-                self._normalize_match_text(requested_track.name),
-                self._normalize_match_text(candidate_track.name),
-            ),
-            self._text_similarity(
-                self._compact_match_text(requested_track.name),
-                self._compact_match_text(candidate_track.name),
-            ),
-        )
-        artist_score = self._text_similarity(
-            self._compact_match_text(requested_track.primary_artist_name()),
-            self._compact_match_text(candidate_track.primary_artist_name()),
-        )
-        candidate_artist = self._compact_match_text(candidate_track.primary_artist_name())
-
-        if title_score < 0.72:
-            return False
-        if score < 0.64:
-            return False
-        if self._has_duration_mismatch(
-            requested_track.duration_ms,
-            candidate_track.duration_ms,
-        ):
-            return False
-        if (
-            self._is_short_form_text(candidate_track.name)
-            and not self._is_short_form_text(requested_track.name)
-        ):
-            return False
-        if artist_score >= 0.52:
-            return True
-        if not candidate_artist and title_score >= 0.96:
-            return True
-        return False
-
     def _download_source_order(self) -> list[str]:
         preferred_source = self._state.title_search_source
         if preferred_source == "soundcloud":
             return ["soundcloud", "youtube"]
         return ["youtube", "soundcloud"]
-
-    def _build_query_variants(self, value: str) -> list[str]:
-        normalized = value.strip()
-        compacted = self._compact_match_text(value)
-        return self._unique_targets([normalized, compacted])
-
-    def _normalize_match_text(self, value: str) -> str:
-        return self._SPACE_RE.sub(" ", value.casefold().strip())
-
-    def _compact_match_text(self, value: str) -> str:
-        lowered = self._normalize_match_text(value)
-        without_parenthetical = self._PAREN_RE.sub(" ", lowered)
-        without_derivative = self._DERIVATIVE_RE.sub(" ", without_parenthetical)
-        return self._SPACE_RE.sub(" ", without_derivative).strip()
-
-    def _is_derivative_text(self, value: str) -> bool:
-        return bool(self._DERIVATIVE_RE.search(value or ""))
-
-    def _is_short_form_text(self, value: str) -> bool:
-        return bool(self._SHORT_FORM_RE.search(value or ""))
-
-    @staticmethod
-    def _text_similarity(left: str, right: str) -> float:
-        if not left or not right:
-            return 0.0
-        return SequenceMatcher(None, left, right).ratio()
-
-    @staticmethod
-    def _duration_match_score(
-        requested_duration_ms: int,
-        candidate_duration_ms: int,
-    ) -> float:
-        if requested_duration_ms <= 0 or candidate_duration_ms <= 0:
-            return 0.0
-
-        duration_delta = abs(requested_duration_ms - candidate_duration_ms)
-        soft_tolerance_ms = max(8_000, int(requested_duration_ms * 0.08))
-        hard_tolerance_ms = max(30_000, int(requested_duration_ms * 0.35))
-        if duration_delta <= soft_tolerance_ms:
-            return 1.0
-        if duration_delta >= hard_tolerance_ms:
-            return 0.0
-        return 1.0 - (
-            (duration_delta - soft_tolerance_ms)
-            / max(1, hard_tolerance_ms - soft_tolerance_ms)
-        )
-
-    @staticmethod
-    def _has_duration_mismatch(
-        requested_duration_ms: int,
-        candidate_duration_ms: int,
-    ) -> bool:
-        if requested_duration_ms <= 0 or candidate_duration_ms <= 0:
-            return False
-
-        duration_delta = abs(requested_duration_ms - candidate_duration_ms)
-        allowed_delta_ms = max(15_000, int(requested_duration_ms * 0.18))
-        return duration_delta > allowed_delta_ms
-
-    @staticmethod
-    def _length_preference_bonus(
-        requested_duration_ms: int,
-        candidate_duration_ms: int,
-        title_score: float,
-        artist_score: float,
-    ) -> float:
-        if requested_duration_ms > 0:
-            return 0.0
-        if candidate_duration_ms <= 0:
-            return 0.0
-        if title_score < 0.94 or artist_score < 0.85:
-            return 0.0
-
-        capped_duration_ms = min(candidate_duration_ms, 240_000)
-        return (capped_duration_ms / 240_000) * 0.10
-
-    @staticmethod
-    def _ultra_short_candidate_penalty(
-        requested_duration_ms: int,
-        candidate_duration_ms: int,
-        title_score: float,
-        artist_score: float,
-    ) -> float:
-        if requested_duration_ms > 0:
-            return 0.0
-        if candidate_duration_ms <= 0:
-            return 0.0
-        if title_score < 0.94 or artist_score < 0.85:
-            return 0.0
-        if candidate_duration_ms >= 45_000:
-            return 0.0
-        return 0.18
 
     def _is_reliable_direct_download_track(self, track: Track) -> bool:
         if not track.download_url:
@@ -764,13 +544,13 @@ class YtDlpAssetRepository(AudioAssetRepository):
             return False
 
         source = self._guess_source(track.download_url)
-        match_score = self._build_candidate_match_score(
+        match_score = self._matcher.score(
             requested_track=track,
             candidate_track=candidate_track,
             source=source,
             preferred_source=self._download_source_order()[0],
         )
-        return self._is_reliable_download_match(
+        return self._matcher.is_reliable_match(
             requested_track=track,
             candidate_track=candidate_track,
             score=match_score,
@@ -817,57 +597,17 @@ class YtDlpAssetRepository(AudioAssetRepository):
         except Exception:
             return True
 
-        return not self._has_duration_mismatch(
+        return not self._matcher.has_duration_mismatch(
             expected_duration_ms,
             actual_duration_ms,
         )
-
-    def _build_unique_file_path(self, target_directory: Path, track: Track) -> Path:
-        base_name = self._sanitize_filename(f"{track.artist_line()} - {track.name}")
-        candidate = target_directory / f"{base_name}.mp3"
-        suffix = 1
-        while candidate.exists():
-            candidate = target_directory / f"{base_name} ({suffix}).mp3"
-            suffix += 1
-        return candidate
-
-    def _build_unique_directory_path(
-        self,
-        target_directory: Path,
-        track: Track,
-    ) -> Path:
-        base_name = self._sanitize_filename(f"{track.artist_line()} - {track.name}")
-        candidate = target_directory / base_name
-        suffix = 1
-        while candidate.exists():
-            candidate = target_directory / f"{base_name} ({suffix})"
-            suffix += 1
-        return candidate
-
-    def _cleanup_generated_files(self, file_path: Path) -> None:
-        stem = file_path.stem
-        for candidate in file_path.parent.iterdir():
-            if not candidate.is_file():
-                continue
-            name = candidate.name
-            if name == file_path.name or name.startswith(f"{stem}."):
-                candidate.unlink(missing_ok=True)
-
-    def _cleanup_attempt_outputs(
-        self,
-        target_directory: Path,
-        existing_files: set[Path],
-    ) -> None:
-        current_files = self._snapshot_files(target_directory)
-        for candidate in current_files - existing_files:
-            candidate.unlink(missing_ok=True)
 
     def _wrap_download_error(self, error: Exception) -> DownloadError:
         message = str(error).strip() or error.__class__.__name__
         if "ffmpeg" in message.lower():
             return DownloadError(
                 "FFmpeg is required to convert downloads to MP3. "
-                "Install FFmpeg and add it to PATH."
+                "Repair the app install or add FFmpeg to PATH."
             )
         return DownloadError(f"Could not download the selected item: {message}")
 
@@ -950,53 +690,6 @@ class YtDlpAssetRepository(AudioAssetRepository):
         return text or default
 
     @staticmethod
-    def _sanitize_filename(value: str) -> str:
-        normalized = re.sub(r'[<>:"/\\\\|?*]+', " ", value)
-        normalized = re.sub(r"\s+", " ", normalized).strip(" .")
-        return normalized or "SpotiVa Track"
-
-    @staticmethod
-    def _snapshot_files(target_directory: Path) -> set[Path]:
-        return {
-            candidate.resolve()
-            for candidate in target_directory.iterdir()
-            if candidate.is_file()
-        }
-
-    def _resolve_downloaded_file_path(
-        self,
-        expected_file_path: Path,
-        existing_files: set[Path],
-    ) -> Path | None:
-        if expected_file_path.exists():
-            return expected_file_path
-
-        current_files = self._snapshot_files(expected_file_path.parent)
-        new_files = current_files - existing_files
-        new_mp3_files = [
-            candidate
-            for candidate in new_files
-            if candidate.suffix.casefold() == ".mp3"
-        ]
-        if len(new_mp3_files) == 1:
-            return new_mp3_files[0]
-        if new_mp3_files:
-            return max(new_mp3_files, key=lambda candidate: candidate.stat().st_mtime)
-        return None
-
-    @staticmethod
-    def _normalize_downloaded_file_name(
-        actual_file_path: Path,
-        expected_file_path: Path,
-    ) -> Path:
-        if actual_file_path == expected_file_path:
-            return expected_file_path
-        if expected_file_path.exists():
-            return expected_file_path
-        actual_file_path.replace(expected_file_path)
-        return expected_file_path
-
-    @staticmethod
     def _unique_targets(values: list[str]) -> list[str]:
         unique_values: list[str] = []
         seen: set[str] = set()
@@ -1007,35 +700,3 @@ class YtDlpAssetRepository(AudioAssetRepository):
             seen.add(normalized)
             unique_values.append(normalized)
         return unique_values
-
-
-class _YtDlpProgressHook:
-    def __init__(self, callback: Callable[[int, int], None] | None) -> None:
-        self._callback = callback
-
-    def __call__(self, payload: Mapping[str, object]) -> None:
-        if not self._callback:
-            return
-
-        status = str(payload.get("status", "")).strip().lower()
-        if status not in {"downloading", "finished"}:
-            return
-
-        downloaded = self._safe_int(payload.get("downloaded_bytes"))
-        total = self._safe_int(
-            payload.get("total_bytes") or payload.get("total_bytes_estimate")
-        )
-
-        if status == "finished":
-            resolved_total = total or downloaded
-            self._callback(resolved_total, resolved_total)
-            return
-
-        self._callback(downloaded, total)
-
-    @staticmethod
-    def _safe_int(value: object) -> int:
-        try:
-            return int(float(value or 0))
-        except (TypeError, ValueError):
-            return 0

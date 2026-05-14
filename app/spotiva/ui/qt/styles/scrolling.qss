@@ -1,0 +1,20 @@
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+
+QScrollBar:vertical {
+    width: 9px;
+    margin: 8px 0;
+    background: transparent;
+}
+
+QScrollBar::handle:vertical {
+    border-radius: 4px;
+    background: rgba(45, 216, 112, 0.24);
+    min-height: 30px;
+}
+
+QSplitter::handle {
+    background: transparent;
+}

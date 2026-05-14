@@ -1,0 +1,52 @@
+QToolButton#menuButton {
+    background: rgba(16, 18, 17, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
+    padding: 0;
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 44px;
+    max-height: 44px;
+}
+
+QToolButton#menuButton:hover {
+    background: rgba(20, 24, 22, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+QToolButton#menuButton:pressed {
+    background: rgba(24, 28, 26, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+QFrame#drawerScrim {
+    background: rgba(4, 8, 6, 0.52);
+}
+
+QFrame#navigationDrawer {
+    background: rgba(11, 15, 13, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 24px;
+}
+
+QFrame#drawerNavItem {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 16px;
+}
+
+QFrame#drawerNavItem:hover {
+    background: rgba(19, 23, 21, 0.56);
+    border: 1px solid rgba(255, 255, 255, 0.025);
+}
+
+QFrame#drawerNavItem[active="true"] {
+    background: rgba(21, 27, 24, 0.72);
+    border: 1px solid rgba(45, 216, 112, 0.12);
+}
+
+QFrame#drawerNavAccent {
+    background: rgba(45, 216, 112, 0.86);
+    border: none;
+    border-radius: 2px;
+}

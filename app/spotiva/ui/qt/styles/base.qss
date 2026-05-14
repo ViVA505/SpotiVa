@@ -1,0 +1,8 @@
+QWidget {
+    background: transparent;
+    color: #f4f7f5;
+}
+
+QMainWindow {
+    background: #000000;
+}

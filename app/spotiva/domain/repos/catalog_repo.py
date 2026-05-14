@@ -15,5 +15,6 @@ class DownloadCatalogRepository(ABC):
         artist_name: str = "",
         source: str = DEFAULT_TITLE_SEARCH_SOURCE,
         lyric_search_enabled: bool = True,
+        lyric_search_only: bool = False,
     ) -> list[Track]:
         raise NotImplementedError

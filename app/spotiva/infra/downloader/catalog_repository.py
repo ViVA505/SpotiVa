@@ -39,7 +39,11 @@ class YtDlpCatalogRepository(DownloadCatalogRepository):
         artist_name: str = "",
         source: str = DEFAULT_TITLE_SEARCH_SOURCE,
         lyric_search_enabled: bool = True,
+        lyric_search_only: bool = False,
     ) -> list[Track]:
+        if lyric_search_only:
+            return self._search_tracks_from_lyrics(query, limit, source)[:limit]
+
         results = self._search_client.search(
             query=query,
             limit=limit,

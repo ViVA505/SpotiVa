@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.request import urlopen
 
 from PyQt6.QtCore import (
     QEasingCurve,
     QPropertyAnimation,
     QSize,
     Qt,
-    QThread,
     QUrl,
     pyqtSignal,
 )
@@ -24,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from spotiva.domain.entities.track import Track
+from spotiva.ui.qt.image_loader import ImageBytesLoader
 from spotiva.ui.qt.widgets.buttons import PrimaryButton, SecondaryButton
 
 
@@ -32,21 +31,7 @@ _FOLDER_ICON_PATH = (
 )
 
 
-class ArtworkLoader(QThread):
-    completed = pyqtSignal(str, bytes)
-    failed = pyqtSignal(str)
-
-    def __init__(self, url: str, timeout: int, parent=None) -> None:
-        super().__init__(parent)
-        self._url = url
-        self._timeout = timeout
-
-    def run(self) -> None:
-        try:
-            with urlopen(self._url, timeout=self._timeout) as response:
-                self.completed.emit(self._url, response.read())
-        except Exception:
-            self.failed.emit(self._url)
+ArtworkLoader = ImageBytesLoader
 
 
 def _build_folder_icon() -> QIcon:
@@ -186,7 +171,7 @@ class DetailPanel(QFrame):
         super().resizeEvent(event)
         self._apply_responsive_metrics()
 
-    def show_track(self, track: Track) -> None:
+    def show_track(self, track: Track, load_artwork_network: bool = True) -> None:
         self._track = track
         self._title.setText(track.name)
         self._artist_label.setText(track.artist_line())
@@ -219,7 +204,7 @@ class DetailPanel(QFrame):
 
         image_url = track.best_image_url()
         if image_url:
-            self._load_artwork(image_url)
+            self._load_artwork(image_url, allow_network=load_artwork_network)
         else:
             self._pending_artwork_url = ""
             self._cover_label.setPixmap(QPixmap())
@@ -373,7 +358,7 @@ class DetailPanel(QFrame):
     def _scaled(value: int, scale: float) -> int:
         return max(1, int(round(value * scale)))
 
-    def _load_artwork(self, url: str) -> None:
+    def _load_artwork(self, url: str, allow_network: bool = True) -> None:
         cached_pixmap = self._artwork_cache.get(url)
         if cached_pixmap is not None:
             self._pending_artwork_url = url
@@ -382,6 +367,11 @@ class DetailPanel(QFrame):
             return
 
         self._pending_artwork_url = url
+        if not allow_network:
+            self._cover_label.setPixmap(QPixmap())
+            self._cover_label.setText("No artwork")
+            return
+
         self._cover_label.setText("Loading artwork...")
         self._cover_label.setPixmap(QPixmap())
 

@@ -16,6 +16,7 @@ class SearchDownloadableTracksUseCase:
         artist_name: str = "",
         source: str = DEFAULT_TITLE_SEARCH_SOURCE,
         lyric_search_enabled: bool = True,
+        lyric_search_only: bool = False,
     ) -> list[Track]:
         normalized = query.strip()
         if not normalized:
@@ -28,4 +29,5 @@ class SearchDownloadableTracksUseCase:
             artist_name=artist_name.strip(),
             source=source,
             lyric_search_enabled=lyric_search_enabled,
+            lyric_search_only=lyric_search_only,
         )

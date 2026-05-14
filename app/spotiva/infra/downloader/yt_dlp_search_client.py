@@ -15,10 +15,11 @@ from spotiva.core.title_sources import (
     normalize_title_search_source,
     title_search_source_label,
 )
+from spotiva.domain.repos.artwork_repo import ArtworkRepository
 from spotiva.infra.downloader.models import DownloadSearchResult
 
 
-class YtDlpSearchClient:
+class YtDlpSearchClient(ArtworkRepository):
     def __init__(
         self,
         cache_size: int = 48,

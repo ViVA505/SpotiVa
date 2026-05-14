@@ -1,0 +1,134 @@
+QLabel#brandLabel {
+    color: #ffffff;
+    font-size: 25px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#sectionTitle {
+    color: #ffffff;
+    font-size: 22px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#settingsPageTitle {
+    color: #ffffff;
+    font-size: 34px;
+    font-weight: 800;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#settingsSurfaceTitle {
+    color: #f8fbf9;
+    font-size: 18px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#detailTitleLabel {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: 800;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#detailArtistLabel {
+    color: #dce8e0;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+QLabel#detailMetaLabel {
+    color: #8d9a93;
+    font-size: 13px;
+}
+
+QLabel#downloadPathLabel {
+    color: #7c8982;
+    font-size: 12px;
+}
+
+QLabel#headlineLabel {
+    color: #ffffff;
+    font-size: 28px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#bodyLabel {
+    color: #8e9b93;
+    font-size: 13px;
+}
+
+QLabel#captionLabel {
+    color: #6f7a73;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+QLabel#statusLabel {
+    color: #9ad8af;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#cardTitle {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+QLabel#cardSubtitle {
+    color: #6f7a73;
+    font-size: 12px;
+}
+
+QLabel#durationLabel {
+    color: #73d594;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+QLabel#trackTitle {
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 750;
+    font-family: "Segoe UI Semibold";
+}
+
+QLabel#trackMeta {
+    color: #9daaa2;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#trackLyricLine {
+    color: #728078;
+    font-size: 11px;
+}
+
+QLabel#trackBadge {
+    background: transparent;
+    border: none;
+    color: #73d594;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+QLabel#artworkLabel {
+    background: rgba(18, 20, 19, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 22px;
+    color: #7f8b84;
+    font-size: 13px;
+}
+
+QLabel#sourceSwitcherLabel {
+    color: rgba(244, 247, 245, 0.74);
+    font-size: 15px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}

@@ -15,9 +15,10 @@ except ModuleNotFoundError:
 from spotiva.core.constants import DEFAULT_REQUEST_TIMEOUT
 from spotiva.core.exceptions import SpotifyApiError
 from spotiva.domain.entities.track import Album, Artist, Track, TrackImage
+from spotiva.domain.repos.preview_repo import SpotifyPreviewRepository
 
 
-class SpotifyPublicPreviewClient:
+class SpotifyPublicPreviewClient(SpotifyPreviewRepository):
     _NEXT_DATA_RE = re.compile(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
         re.DOTALL,

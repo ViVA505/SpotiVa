@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QSettings, QTimer, Qt
@@ -26,9 +27,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from spotiva.core.constants import APP_NAME
+from spotiva.core.constants import APP_NAME, SEARCH_MODE_CATALOG, SEARCH_MODE_LYRICS
 from spotiva.domain.entities.track import Track
 from spotiva.ui.ctrl.main_ctrl import MainWindowController
+from spotiva.ui.qt.artwork_cache import ArtworkCache
 from spotiva.ui.qt.theme import background_colors
 from spotiva.ui.qt.widgets.detail_panel import DetailPanel
 from spotiva.ui.qt.widgets.empty_state import EmptyState
@@ -45,6 +47,23 @@ from spotiva.ui.qt.workers import (
 )
 
 
+_RESULT_THUMBNAIL_WARMUP_LIMIT = 4
+_RESULT_REVEAL_MAX_WAIT_MS = 520
+
+
+@dataclass
+class _SearchModeState:
+    query: str = ""
+    summary: str = ""
+    tracks: list[Track] = field(default_factory=list)
+    selected_track_id: str = ""
+    resolved_artwork_urls: dict[str, str] = field(default_factory=dict)
+    scroll_position: int = 0
+    empty_title: str = ""
+    empty_message: str = ""
+    has_searched: bool = False
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -57,7 +76,6 @@ class MainWindow(QMainWindow):
         self._request_timeout = request_timeout
         self._ui_settings = QSettings(APP_NAME, APP_NAME)
         self._restore_title_search_source()
-        self._restore_lyric_search_enabled()
         self._search_worker = None
         self._download_worker = None
         self._artwork_workers: list[ArtworkResolveWorker] = []
@@ -65,15 +83,29 @@ class MainWindow(QMainWindow):
         self._resolved_artwork_urls: dict[str, str] = {}
         self._selected_track_id = ""
         self._track_cards = []
+        self._pending_thumbnail_track_ids: set[str] = set()
+        self._pending_auto_select_track: Track | None = None
+        self._artwork_cache = ArtworkCache(self)
+        self._artwork_cache.loaded.connect(self._handle_artwork_payload_loaded)
+        self._artwork_cache.failed.connect(self._handle_artwork_payload_failed)
         self._intro_started = False
         self._intro_animations = []
         self._pages: dict[str, QWidget] = {}
         self._detail_panel_visible = True
         self._detail_panel_sizes = [760, 420]
+        self._active_search_mode = SEARCH_MODE_CATALOG
+        self._search_mode_states = {
+            SEARCH_MODE_CATALOG: _SearchModeState(),
+            SEARCH_MODE_LYRICS: _SearchModeState(),
+        }
 
         self.setWindowTitle(APP_NAME)
         self.resize(1360, 860)
         self.setMinimumSize(980, 680)
+
+        self._results_reveal_timer = QTimer(self)
+        self._results_reveal_timer.setSingleShot(True)
+        self._results_reveal_timer.timeout.connect(self._reveal_pending_results)
 
         shell = QFrame(self)
         shell.setObjectName("shell")
@@ -204,15 +236,11 @@ class MainWindow(QMainWindow):
         self._settings_page = SettingsPage(
             title_source=self._controller.title_search_source(),
             title_source_options=self._controller.available_title_sources(),
-            lyric_search_enabled=self._controller.lyric_search_enabled(),
             parent=self,
         )
         self._settings_page.back_requested.connect(lambda: self._open_page("search"))
         self._settings_page.title_source_changed.connect(
             self._apply_title_source_change
-        )
-        self._settings_page.lyric_search_changed.connect(
-            self._apply_lyric_search_change
         )
         self._pages["settings"] = self._settings_page
         return self._settings_page
@@ -226,6 +254,7 @@ class MainWindow(QMainWindow):
 
         self._search_bar = SearchBar(card)
         self._search_bar.search_requested.connect(self._start_search)
+        self._search_bar.mode_changed.connect(self._handle_search_mode_changed)
         layout.addWidget(self._search_bar)
 
         self._status_label = QLabel("", card)
@@ -302,17 +331,20 @@ class MainWindow(QMainWindow):
         )
         self._set_detail_panel_visible(False)
 
-    def _start_search(self, query: str) -> None:
+    def _start_search(self, query: str, search_mode: str) -> None:
         normalized = query.strip()
+        if search_mode not in {SEARCH_MODE_CATALOG, SEARCH_MODE_LYRICS}:
+            search_mode = SEARCH_MODE_CATALOG
+        self._active_search_mode = search_mode
+
         if not normalized:
-            self._show_error(
-                "Enter a track title, album title, lyric line, or paste a Spotify link."
-            )
+            self._show_error(self._empty_query_message(search_mode))
             return
 
         self._search_bar.set_busy(True)
         self._set_status("Searching...")
         self._set_results_summary("")
+        self._cancel_pending_results_reveal()
         self._clear_results()
         self._show_loading_state()
         self._detail_panel.show_placeholder()
@@ -320,75 +352,285 @@ class MainWindow(QMainWindow):
         self._resolved_artwork_urls.clear()
         self._selected_track_id = ""
 
-        self._search_worker = TrackSearchWorker(self._controller, normalized, self)
+        self._search_worker = TrackSearchWorker(
+            self._controller,
+            normalized,
+            search_mode,
+            self,
+        )
         self._search_worker.completed.connect(
             lambda tracks, artwork_payloads: self._handle_search_success(
                 normalized,
+                search_mode,
                 tracks,
                 artwork_payloads,
             )
         )
-        self._search_worker.failed.connect(self._handle_search_error)
+        self._search_worker.failed.connect(
+            lambda message: self._handle_search_error(
+                normalized,
+                search_mode,
+                message,
+            )
+        )
         self._search_worker.finished.connect(lambda: self._search_bar.set_busy(False))
         self._search_worker.start()
 
     def _handle_search_success(
         self,
         query: str,
+        search_mode: str,
         tracks: list[Track],
         artwork_payloads: dict[str, bytes],
     ) -> None:
         if not tracks:
+            message = self._nothing_found_message(search_mode)
+            self._search_mode_states[search_mode] = _SearchModeState(
+                query=query,
+                empty_message=message,
+                has_searched=True,
+            )
+            if search_mode != self._active_search_mode:
+                return
+
             self._set_status("")
             self._set_results_summary("")
             self._show_empty_state(
                 "",
-                "Nothing found on "
-                f"{self._controller.title_search_source_label()}. "
-                "Try a more precise track title, album title, or lyric line.",
+                message,
             )
             self._clear_results()
             self._detail_panel.show_placeholder()
             self._set_detail_panel_visible(False)
             return
 
+        summary = self._controller.result_summary(query, tracks)
+        self._search_mode_states[search_mode] = _SearchModeState(
+            query=query,
+            summary=summary,
+            tracks=list(tracks),
+            selected_track_id=tracks[0].track_id,
+            has_searched=True,
+        )
+        if search_mode != self._active_search_mode:
+            return
+
         self._set_status("")
-        self._set_results_summary(self._controller.result_summary(query, tracks))
+        self._set_results_summary(summary)
         self._detail_panel.prime_artwork_payloads(artwork_payloads)
         self._populate_results(tracks)
         self._prime_album_artwork(tracks)
-        self._show_results_state()
-        self._select_track(tracks[0])
+        self._schedule_results_reveal(tracks[0])
 
-    def _handle_search_error(self, message: str) -> None:
+    def _handle_search_error(
+        self,
+        query: str,
+        search_mode: str,
+        message: str,
+    ) -> None:
+        self._search_mode_states[search_mode] = _SearchModeState(
+            query=query,
+            empty_message=message,
+            has_searched=True,
+        )
+        if search_mode != self._active_search_mode:
+            return
+
         self._set_status("")
         self._set_results_summary("")
+        self._cancel_pending_results_reveal()
         self._show_empty_state("", message)
         self._clear_results()
         self._detail_panel.show_message("", message)
         self._set_detail_panel_visible(False)
         self._show_error(message)
 
-    def _populate_results(self, tracks: list[Track]) -> None:
+    def _handle_search_mode_changed(self, search_mode: str) -> None:
+        self._save_visible_search_state(self._active_search_mode)
+        self._active_search_mode = search_mode
+        self._restore_search_mode_state(search_mode)
+
+    def _save_visible_search_state(self, search_mode: str) -> None:
+        state = self._search_mode_states.get(search_mode)
+        if state is None:
+            return
+
+        state.query = self._search_bar.text()
+        state.selected_track_id = self._selected_track_id
+        state.resolved_artwork_urls = dict(self._resolved_artwork_urls)
+        state.scroll_position = self._results_scroll.verticalScrollBar().value()
+
+    def _restore_search_mode_state(self, search_mode: str) -> None:
+        state = self._search_mode_states.get(search_mode, _SearchModeState())
+        self._cancel_pending_results_reveal()
+        self._search_bar.set_text(state.query)
+        self._set_status("")
+        self._set_results_summary(state.summary)
+        self._clear_results()
+        self._resolved_artwork_urls = dict(state.resolved_artwork_urls)
+        self._selected_track_id = ""
+
+        if state.tracks:
+            self._populate_results(state.tracks, animate=False)
+            self._show_results_state()
+            for card in self._track_cards:
+                self._restore_cached_result_thumbnail(card)
+            selected_track = (
+                self._track_by_id(state.tracks, state.selected_track_id)
+                or state.tracks[0]
+            )
+            self._select_track(
+                selected_track,
+                load_artwork_network=False,
+                resolve_missing_artwork=False,
+            )
+            QTimer.singleShot(
+                0,
+                lambda value=state.scroll_position: (
+                    self._results_scroll.verticalScrollBar().setValue(value)
+                ),
+            )
+            return
+
+        if state.has_searched:
+            self._show_empty_state(state.empty_title, state.empty_message)
+            self._detail_panel.show_placeholder()
+            self._set_detail_panel_visible(False)
+            return
+
+        self._show_results_state()
+        self._detail_panel.show_placeholder()
+        self._set_detail_panel_visible(False)
+
+    def _empty_query_message(self, search_mode: str) -> str:
+        if search_mode == SEARCH_MODE_LYRICS:
+            return "Enter a lyric line."
+        return "Enter a track title, album title, or paste a Spotify link."
+
+    def _nothing_found_message(self, search_mode: str) -> str:
+        if search_mode == SEARCH_MODE_LYRICS:
+            return "No lyric matches found via Genius. Try a longer or more exact line."
+        return (
+            f"Nothing found on {self._controller.title_search_source_label()}. "
+            "Try a more precise track title or album title."
+        )
+
+    def _populate_results(self, tracks: list[Track], animate: bool = True) -> None:
         self._clear_results()
         for index, track in enumerate(tracks):
             card = TrackCard(track, self._results_host)
             card.clicked.connect(self._select_track)
+            card.thumbnail_ready.connect(self._handle_result_thumbnail_ready)
             self._results_layout.insertWidget(index, card)
-            card.fade_in(min(index * 18, 90))
+            if animate:
+                card.fade_in(min(index * 18, 90))
             self._track_cards.append(card)
-        self._results_layout.addStretch()
 
-    def _select_track(self, track: Track) -> None:
+    def _schedule_results_reveal(self, first_track: Track) -> None:
+        self._pending_auto_select_track = first_track
+        self._pending_thumbnail_track_ids = {
+            card.track.track_id
+            for card in self._track_cards[:_RESULT_THUMBNAIL_WARMUP_LIMIT]
+        }
+
+        for card in self._track_cards:
+            self._warm_result_thumbnail(card)
+
+        if not self._pending_thumbnail_track_ids:
+            self._reveal_pending_results()
+            return
+
+        self._results_reveal_timer.start(_RESULT_REVEAL_MAX_WAIT_MS)
+
+    def _handle_result_thumbnail_ready(self, track_id: str) -> None:
+        if track_id not in self._pending_thumbnail_track_ids:
+            return
+
+        self._pending_thumbnail_track_ids.discard(track_id)
+        if not self._pending_thumbnail_track_ids:
+            self._reveal_pending_results()
+
+    def _reveal_pending_results(self) -> None:
+        if self._results_reveal_timer.isActive():
+            self._results_reveal_timer.stop()
+
+        track = self._pending_auto_select_track
+        self._pending_auto_select_track = None
+        self._pending_thumbnail_track_ids.clear()
+        self._show_results_state()
+        if track is not None:
+            self._select_track(track)
+
+    def _warm_result_thumbnail(self, card: TrackCard) -> None:
+        artwork_url = card.track.best_image_url()
+        if not artwork_url:
+            card.thumbnail_ready.emit(card.track.track_id)
+            return
+
+        cached_payload = self._artwork_cache.payload(artwork_url)
+        if cached_payload:
+            card.show_thumbnail_payload(cached_payload)
+            return
+
+        self._artwork_cache.request(artwork_url)
+
+    def _restore_cached_result_thumbnail(self, card: TrackCard) -> None:
+        artwork_url = card.track.best_image_url()
+        if not artwork_url:
+            return
+
+        cached_payload = self._artwork_cache.payload(artwork_url)
+        if cached_payload:
+            card.show_thumbnail_payload(cached_payload)
+
+    def _handle_artwork_payload_loaded(self, artwork_url: str, payload: bytes) -> None:
+        self._detail_panel.prime_artwork_payloads({artwork_url: payload})
+        for card in self._track_cards:
+            if card.track.best_image_url() == artwork_url:
+                card.show_thumbnail_payload(payload)
+
+    def _handle_artwork_payload_failed(self, artwork_url: str) -> None:
+        for card in self._track_cards:
+            if card.track.best_image_url() == artwork_url:
+                card.thumbnail_ready.emit(card.track.track_id)
+
+    def _cancel_pending_results_reveal(self) -> None:
+        if self._results_reveal_timer.isActive():
+            self._results_reveal_timer.stop()
+        self._pending_auto_select_track = None
+        self._pending_thumbnail_track_ids.clear()
+
+    def _select_track(
+        self,
+        track: Track,
+        load_artwork_network: bool = True,
+        resolve_missing_artwork: bool = True,
+    ) -> None:
         self._selected_track_id = track.track_id
+        state = self._search_mode_states.get(self._active_search_mode)
+        if state is not None:
+            state.selected_track_id = track.track_id
         for card in self._track_cards:
             card.set_active(card.track.track_id == track.track_id)
         self._set_detail_panel_visible(True)
-        self._detail_panel.show_track(track)
+        self._detail_panel.show_track(
+            track,
+            load_artwork_network=load_artwork_network,
+        )
         prefetched_url = self._resolved_artwork_urls.get(track.track_id, "")
         if prefetched_url and not track.best_image_url():
             self._detail_panel.show_resolved_artwork(track.track_id, prefetched_url)
-        self._maybe_resolve_selected_artwork(track)
+        if resolve_missing_artwork:
+            self._maybe_resolve_selected_artwork(track)
+
+    @staticmethod
+    def _track_by_id(tracks: list[Track], track_id: str) -> Track | None:
+        if not track_id:
+            return None
+        for track in tracks:
+            if track.track_id == track_id:
+                return track
+        return None
 
     def _clear_results(self) -> None:
         self._track_cards.clear()
@@ -398,6 +640,7 @@ class MainWindow(QMainWindow):
             if widget is None:
                 continue
             widget.setParent(None)
+            widget.deleteLater()
         self._results_layout.addStretch()
 
     def _copy_link_to_clipboard(self, value: str) -> None:
@@ -528,9 +771,6 @@ class MainWindow(QMainWindow):
         self._nav_drawer.set_current_page(page_name)
         if page_name == "settings":
             self._settings_page.set_title_source(self._controller.title_search_source())
-            self._settings_page.set_lyric_search_enabled(
-                self._controller.lyric_search_enabled()
-            )
 
     def _apply_title_source_change(self, value: str) -> None:
         self._controller.set_title_search_source(value)
@@ -542,17 +782,6 @@ class MainWindow(QMainWindow):
             self._controller.title_search_source_label()
         )
         self._settings_page.set_title_source(self._controller.title_search_source())
-        self._set_status("")
-
-    def _apply_lyric_search_change(self, is_enabled: bool) -> None:
-        self._controller.set_lyric_search_enabled(is_enabled)
-        self._ui_settings.setValue(
-            "lyric_search_enabled",
-            self._controller.lyric_search_enabled(),
-        )
-        self._settings_page.set_lyric_search_enabled(
-            self._controller.lyric_search_enabled()
-        )
         self._set_status("")
 
     def _choose_download_directory(self) -> None:
@@ -583,14 +812,6 @@ class MainWindow(QMainWindow):
         ).strip()
         if saved_source:
             self._controller.set_title_search_source(saved_source)
-
-    def _restore_lyric_search_enabled(self) -> None:
-        saved_enabled = self._ui_settings.value(
-            "lyric_search_enabled",
-            self._controller.lyric_search_enabled(),
-            type=bool,
-        )
-        self._controller.set_lyric_search_enabled(bool(saved_enabled))
 
     def _toggle_nav_drawer(self) -> None:
         self._sync_nav_drawer()

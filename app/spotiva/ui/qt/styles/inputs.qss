@@ -1,0 +1,43 @@
+QLineEdit {
+    background: rgba(10, 12, 11, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 15px;
+    padding: 14px 16px;
+    color: #f8fbf9;
+    selection-background-color: #2dd870;
+    font-size: 14px;
+}
+
+QLineEdit:focus {
+    background: rgba(14, 18, 16, 0.92);
+    border: 1px solid rgba(45, 216, 112, 0.28);
+}
+
+QComboBox {
+    background: rgba(10, 12, 11, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 15px;
+    padding: 12px 14px;
+    color: #f8fbf9;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QComboBox:focus {
+    background: rgba(14, 18, 16, 0.92);
+    border: 1px solid rgba(45, 216, 112, 0.28);
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 26px;
+}
+
+QComboBox QAbstractItemView {
+    background: rgba(14, 17, 16, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #f4f7f5;
+    selection-background-color: rgba(45, 216, 112, 0.26);
+    selection-color: #ffffff;
+    outline: 0;
+}

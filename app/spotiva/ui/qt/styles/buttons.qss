@@ -1,0 +1,68 @@
+QPushButton {
+    border: none;
+    border-radius: 15px;
+    padding: 12px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: "Segoe UI Semibold";
+}
+
+QPushButton#primaryButton {
+    background: #2dd870;
+    color: #041109;
+}
+
+QPushButton#primaryButton:hover {
+    background: #46de82;
+}
+
+QPushButton#primaryButton:pressed {
+    background: #28c666;
+}
+
+QPushButton#secondaryButton {
+    background: rgba(16, 18, 17, 0.78);
+    color: #eff7f2;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+QPushButton#secondaryButton:hover {
+    background: rgba(20, 24, 22, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+QPushButton#secondaryButton:pressed {
+    background: rgba(24, 28, 26, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+QToolButton#iconButton {
+    background: rgba(16, 18, 17, 0.78);
+    color: #eff7f2;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 15px;
+    padding: 10px;
+    min-width: 44px;
+    min-height: 44px;
+}
+
+QToolButton#iconButton:hover {
+    background: rgba(20, 24, 22, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+QToolButton#iconButton:pressed {
+    background: rgba(24, 28, 26, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+QPushButton:disabled {
+    background: rgba(17, 17, 17, 0.99);
+    color: #55615a;
+}
+
+QToolButton#iconButton:disabled {
+    background: rgba(17, 17, 17, 0.99);
+    color: #55615a;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}

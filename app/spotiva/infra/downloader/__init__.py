@@ -2,7 +2,10 @@ from . import (
     asset_repository,
     audio_tagger,
     catalog_repository,
+    file_store,
+    matching,
     models,
+    progress,
     track_mapper,
     yt_dlp_search_client,
 )
@@ -23,7 +26,10 @@ __all__ = [
     "asset_repository",
     "audio_tagger",
     "catalog_repository",
+    "file_store",
+    "matching",
     "models",
+    "progress",
     "track_mapper",
     "yt_dlp_search_client",
 ]
