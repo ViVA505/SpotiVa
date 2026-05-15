@@ -4,6 +4,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from urllib.parse import quote
 
 import requests
@@ -20,6 +21,29 @@ from spotiva.infra.downloader.models import DownloadSearchResult
 
 
 class YtDlpSearchClient(ArtworkRepository):
+    _MAX_SEARCH_LIMIT = 50
+    _MAX_YOUTUBE_ALBUM_SEARCH_LIMIT = 20
+    _MAX_SOUNDCLOUD_ALBUM_SEARCH_LIMIT = 25
+    _SOUNDCLOUD_API_BASE = "https://api-v2.soundcloud.com"
+    _SOUNDCLOUD_CLIENT_ID_RE = re.compile(r'client_id:"([A-Za-z0-9]{32})"')
+    _SOUNDCLOUD_HEADERS = {
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/133.0.0.0 Safari/537.36"
+        ),
+    }
+    _PLACEHOLDER_ARTIST_NAMES = frozenset(
+        {
+            "metadata",
+            "none",
+            "null",
+            "unknown",
+            "unknown artist",
+        }
+    )
+
     def __init__(
         self,
         cache_size: int = 48,
@@ -37,6 +61,8 @@ class YtDlpSearchClient(ArtworkRepository):
         ] = OrderedDict()
         self._request_timeout = max(5, int(request_timeout))
         self._session = requests.Session()
+        self._soundcloud_client_id = ""
+        self._soundcloud_client_id_lock = Lock()
 
     def search(
         self,
@@ -48,7 +74,7 @@ class YtDlpSearchClient(ArtworkRepository):
         normalized_source = normalize_title_search_source(source)
         normalized_query = query.strip()
         normalized_artist = artist_name.strip()
-        normalized_limit = max(1, min(limit, 10))
+        normalized_limit = self._normalize_search_limit(limit)
         cache_key = (
             normalized_source,
             normalized_query.casefold(),
@@ -84,7 +110,7 @@ class YtDlpSearchClient(ArtworkRepository):
                 album_results = []
 
         results = self._dedupe_results(track_results + album_results)
-        if normalized_source == "soundcloud":
+        if normalized_source == "soundcloud" and len(results) < normalized_limit:
             linked_results = self._resolve_soundcloud_linked_results(results[:4])
             results = self._dedupe_results(results + linked_results)
         self._remember(cache_key, results)
@@ -118,6 +144,15 @@ class YtDlpSearchClient(ArtworkRepository):
         source: str,
         artist_name: str,
     ) -> list[DownloadSearchResult]:
+        if source == "soundcloud":
+            api_results = self._search_soundcloud_track_results(
+                query,
+                limit,
+                artist_name,
+            )
+            if api_results:
+                return api_results
+
         search_target = self._build_track_search_target(
             query=query,
             limit=limit,
@@ -184,7 +219,10 @@ class YtDlpSearchClient(ArtworkRepository):
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": True,
-            "playlistend": max(1, min(limit, 5)),
+            "playlistend": max(
+                1,
+                min(limit, self._MAX_YOUTUBE_ALBUM_SEARCH_LIMIT),
+            ),
         }
 
         try:
@@ -215,44 +253,150 @@ class YtDlpSearchClient(ArtworkRepository):
         limit: int,
         artist_name: str,
     ) -> list[DownloadSearchResult]:
+        api_results = self._search_soundcloud_playlist_results(
+            query,
+            limit,
+            artist_name,
+        )
+        return api_results
+
+    def _search_soundcloud_track_results(
+        self,
+        query: str,
+        limit: int,
+        artist_name: str,
+    ) -> list[DownloadSearchResult]:
+        search_items = self._search_soundcloud_api_items(
+            endpoint="search/tracks",
+            query=query,
+            limit=limit,
+            artist_name=artist_name,
+        )
+        results: list[DownloadSearchResult] = []
+        for item in search_items:
+            mapped = self._map_soundcloud_api_track(item)
+            if mapped and mapped.page_url:
+                results.append(mapped)
+        return results
+
+    def _search_soundcloud_playlist_results(
+        self,
+        query: str,
+        limit: int,
+        artist_name: str,
+    ) -> list[DownloadSearchResult]:
+        results: list[DownloadSearchResult] = []
+        endpoints = ("search/albums", "search/playlists")
+        with ThreadPoolExecutor(max_workers=len(endpoints)) as executor:
+            futures = [
+                executor.submit(
+                    self._search_soundcloud_api_items,
+                    endpoint=endpoint,
+                    query=query,
+                    limit=limit,
+                    artist_name=artist_name,
+                )
+                for endpoint in endpoints
+            ]
+            for future in futures:
+                for item in future.result():
+                    mapped = self._map_soundcloud_api_playlist(item)
+                    if mapped and mapped.page_url:
+                        results.append(mapped)
+
+        return self._dedupe_results(results)[:limit]
+
+    def _search_soundcloud_api_items(
+        self,
+        endpoint: str,
+        query: str,
+        limit: int,
+        artist_name: str,
+    ) -> list[Mapping[str, object]]:
+        client_id = self._get_soundcloud_client_id()
+        if not client_id:
+            return []
+
         search_text = " ".join(
             part for part in (artist_name.strip(), query.strip()) if part
         ).strip()
-        search_url = f"https://soundcloud.com/search/sets?q={quote(search_text)}"
+        if not search_text:
+            return []
 
         try:
             response = self._session.get(
-                search_url,
-                timeout=self._request_timeout,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    )
+                f"{self._SOUNDCLOUD_API_BASE}/{endpoint}",
+                params={
+                    "q": search_text,
+                    "client_id": client_id,
+                    "limit": self._normalize_search_limit(limit),
+                    "offset": 0,
+                    "linked_partitioning": 1,
+                    "app_locale": "en",
                 },
+                timeout=self._request_timeout,
+                headers=self._SOUNDCLOUD_HEADERS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (ValueError, requests.RequestException):
+            return []
+
+        if not isinstance(payload, Mapping):
+            return []
+        collection = payload.get("collection")
+        if not isinstance(collection, list):
+            return []
+
+        return [item for item in collection if isinstance(item, Mapping)]
+
+    def _get_soundcloud_client_id(self) -> str:
+        if self._soundcloud_client_id:
+            return self._soundcloud_client_id
+
+        with self._soundcloud_client_id_lock:
+            if self._soundcloud_client_id:
+                return self._soundcloud_client_id
+
+            self._soundcloud_client_id = self._load_soundcloud_client_id()
+            return self._soundcloud_client_id
+
+    def _load_soundcloud_client_id(self) -> str:
+        try:
+            response = self._session.get(
+                "https://soundcloud.com",
+                timeout=self._request_timeout,
+                headers=self._SOUNDCLOUD_HEADERS,
             )
             response.raise_for_status()
         except requests.RequestException:
-            return []
+            return ""
 
-        urls = self._extract_soundcloud_album_urls(response.text)
-        if not urls:
-            return []
+        script_urls = re.findall(
+            r'<script[^>]+src="([^"]+\.js)"',
+            response.text,
+        )
+        for script_url in reversed(script_urls):
+            url = (
+                script_url
+                if script_url.startswith(("http://", "https://"))
+                else f"https://soundcloud.com{script_url}"
+            )
+            try:
+                script_response = self._session.get(
+                    url,
+                    timeout=self._request_timeout,
+                    headers=self._SOUNDCLOUD_HEADERS,
+                )
+                script_response.raise_for_status()
+            except requests.RequestException:
+                continue
 
-        results: list[DownloadSearchResult] = []
-        selected_urls = urls[:limit]
-        if not selected_urls:
-            return results
+            match = self._SOUNDCLOUD_CLIENT_ID_RE.search(script_response.text)
+            if match:
+                return match.group(1)
 
-        with ThreadPoolExecutor(max_workers=min(3, len(selected_urls))) as executor:
-            for mapped in executor.map(
-                self._load_soundcloud_album_result,
-                selected_urls,
-            ):
-                if mapped and mapped.page_url:
-                    results.append(mapped)
-        return results
+        return ""
 
     def _build_track_search_target(
         self,
@@ -261,7 +405,7 @@ class YtDlpSearchClient(ArtworkRepository):
         source: str,
         artist_name: str,
     ) -> str:
-        search_limit = max(1, min(limit, 10))
+        search_limit = self._normalize_search_limit(limit)
         search_text = " ".join(
             part for part in (artist_name.strip(), query.strip()) if part
         ).strip()
@@ -409,13 +553,87 @@ class YtDlpSearchClient(ArtworkRepository):
             item_count=item_count,
         )
 
+    def _map_soundcloud_api_track(
+        self,
+        item: Mapping[str, object],
+    ) -> DownloadSearchResult | None:
+        if item.get("kind") != "track":
+            return None
+
+        title = self._clean_text(item.get("title"), "Unknown Title")
+        user = self._soundcloud_user(item)
+        artist = self._soundcloud_api_artist(item, user)
+
+        page_url = self._clean_text(item.get("permalink_url"), "")
+        if not page_url:
+            return None
+
+        image_url = self._clean_text(item.get("artwork_url"), "")
+        if not image_url:
+            image_url = self._clean_text(user.get("avatar_url"), "")
+
+        publisher_metadata = item.get("publisher_metadata")
+        album = "Single"
+        if isinstance(publisher_metadata, Mapping):
+            album = self._clean_text(
+                publisher_metadata.get("album_title"),
+                "Single",
+            )
+
+        source_id = self._clean_text(item.get("id") or page_url, title)
+        return DownloadSearchResult(
+            source="soundcloud",
+            source_id=source_id,
+            title=title,
+            artist=artist,
+            page_url=page_url,
+            image_url=image_url,
+            album=album,
+            duration_ms=self._extract_duration_ms(item.get("duration"), scale=1),
+        )
+
+    def _map_soundcloud_api_playlist(
+        self,
+        item: Mapping[str, object],
+    ) -> DownloadSearchResult | None:
+        if item.get("kind") != "playlist":
+            return None
+
+        title = self._clean_text(item.get("title"), "Unknown Album")
+        user = self._soundcloud_user(item)
+        artist = self._soundcloud_api_artist(item, user)
+
+        page_url = self._clean_text(item.get("permalink_url"), "")
+        if not page_url:
+            return None
+
+        image_url = self._clean_text(item.get("artwork_url"), "")
+        if not image_url:
+            image_url = self._clean_text(user.get("avatar_url"), "")
+
+        source_id = self._clean_text(item.get("id") or page_url, title)
+        return DownloadSearchResult(
+            source="soundcloud",
+            source_id=source_id,
+            title=title,
+            artist=artist,
+            page_url=page_url,
+            image_url=image_url,
+            album=title,
+            item_type="album",
+            item_count=self._extract_item_count(
+                item.get("track_count") or item.get("tracks")
+            ),
+        )
+
     def _map_soundcloud_album_info(
         self,
         info: Mapping[str, object],
         url: str,
     ) -> DownloadSearchResult | None:
         title = self._clean_text(info.get("title"), "Unknown Album")
-        artist = self._clean_text(info.get("uploader"), "Unknown Artist")
+        artist = self._clean_artist_candidate(info.get("uploader"))
+        artist = artist or "Unknown Artist"
         image_url = self._extract_image_url(info.get("thumbnails"))
         item_count = self._extract_item_count(info.get("entries"))
         source_id = self._clean_text(info.get("id") or url, title)
@@ -454,7 +672,7 @@ class YtDlpSearchClient(ArtworkRepository):
         return artist.removesuffix(" - Topic").strip() or "Unknown Artist"
 
     def _extract_artist_text(self, entry: Mapping[str, object]) -> str:
-        explicit_artist = self._clean_text(entry.get("artist"), "")
+        explicit_artist = self._clean_artist_candidate(entry.get("artist"))
         if explicit_artist:
             return explicit_artist
 
@@ -463,20 +681,76 @@ class YtDlpSearchClient(ArtworkRepository):
             artist_names: list[str] = []
             for item in raw_artists:
                 if isinstance(item, Mapping):
-                    name = self._clean_text(item.get("name"), "")
+                    name = self._clean_artist_candidate(item.get("name"))
                 else:
-                    name = self._clean_text(item, "")
+                    name = self._clean_artist_candidate(item)
                 if name:
                     artist_names.append(name)
             if artist_names:
                 return ", ".join(artist_names)
 
-        return self._clean_text(
+        fallback_artist = self._clean_artist_candidate(
             entry.get("uploader")
             or entry.get("channel")
-            or entry.get("channel_uploader"),
-            "Unknown Artist",
+            or entry.get("channel_uploader")
         )
+        return fallback_artist or "Unknown Artist"
+
+    @staticmethod
+    def _soundcloud_user(item: Mapping[str, object]) -> Mapping[str, object]:
+        user = item.get("user")
+        if isinstance(user, Mapping):
+            return user
+        return {}
+
+    def _soundcloud_api_artist(
+        self,
+        item: Mapping[str, object],
+        user: Mapping[str, object],
+    ) -> str:
+        publisher_metadata = item.get("publisher_metadata")
+        if isinstance(publisher_metadata, Mapping):
+            artist = self._first_artist_candidate(
+                publisher_metadata,
+                ("artist", "album_artist", "release_artist"),
+            )
+            if artist:
+                return artist
+
+        user_artist = self._clean_artist_candidate(user.get("username"))
+        if user_artist:
+            return user_artist
+
+        if isinstance(publisher_metadata, Mapping):
+            artist = self._first_artist_candidate(
+                publisher_metadata,
+                ("writer_composer", "publisher"),
+            )
+            if artist:
+                return artist
+
+        label_artist = self._first_artist_candidate(
+            item,
+            ("label_name", "publisher"),
+        )
+        return label_artist or "Unknown Artist"
+
+    def _first_artist_candidate(
+        self,
+        source: Mapping[str, object],
+        keys: tuple[str, ...],
+    ) -> str:
+        for key in keys:
+            artist = self._clean_artist_candidate(source.get(key))
+            if artist:
+                return artist
+        return ""
+
+    def _clean_artist_candidate(self, value: object) -> str:
+        text = self._clean_text(value, "")
+        if text.casefold() in self._PLACEHOLDER_ARTIST_NAMES:
+            return ""
+        return text
 
     def _resolve_page_url(
         self,
@@ -499,12 +773,12 @@ class YtDlpSearchClient(ArtworkRepository):
         return f"https://www.youtube.com/watch?v={raw_id}"
 
     @staticmethod
-    def _extract_duration_ms(value: object) -> int:
+    def _extract_duration_ms(value: object, scale: int = 1000) -> int:
         try:
-            duration_seconds = int(float(value or 0))
+            duration_value = int(float(value or 0))
         except (TypeError, ValueError):
             return 0
-        return max(0, duration_seconds * 1000)
+        return max(0, duration_value * max(1, scale))
 
     @staticmethod
     def _extract_image_url(value: object) -> str:
@@ -554,13 +828,23 @@ class YtDlpSearchClient(ArtworkRepository):
             filtered_urls.append(normalized)
         return YtDlpSearchClient._unique_values(filtered_urls)
 
-    @staticmethod
-    def _album_search_limit(source: str, limit: int) -> int:
+    @classmethod
+    def _album_search_limit(cls, source: str, limit: int) -> int:
         if source == "soundcloud":
-            return min(max(2, limit), 3)
-        return min(max(3, limit), 4)
+            return min(max(3, limit // 2), cls._MAX_SOUNDCLOUD_ALBUM_SEARCH_LIMIT)
+        return min(max(4, limit // 3), cls._MAX_YOUTUBE_ALBUM_SEARCH_LIMIT)
+
+    @classmethod
+    def _normalize_search_limit(cls, limit: int) -> int:
+        return max(1, min(int(limit), cls._MAX_SEARCH_LIMIT))
 
     def _resolve_soundcloud_artwork_url(self, album_url: str) -> str:
+        api_artwork_url = self._resolve_soundcloud_api_artwork_url(album_url)
+        if api_artwork_url:
+            return api_artwork_url
+        if "/sets/" in album_url.casefold():
+            return ""
+
         ydl_options = {
             "quiet": True,
             "no_warnings": True,
@@ -615,6 +899,45 @@ class YtDlpSearchClient(ArtworkRepository):
             self._extract_image_url(track_info.get("thumbnails"))
             or self._clean_text(track_info.get("thumbnail"), "")
         )
+
+    def _resolve_soundcloud_api_artwork_url(self, item_url: str) -> str:
+        client_id = self._get_soundcloud_client_id()
+        if not client_id:
+            return ""
+
+        try:
+            response = self._session.get(
+                f"{self._SOUNDCLOUD_API_BASE}/resolve",
+                params={"url": item_url, "client_id": client_id},
+                timeout=self._request_timeout,
+                headers=self._SOUNDCLOUD_HEADERS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (ValueError, requests.RequestException):
+            return ""
+
+        if not isinstance(payload, Mapping):
+            return ""
+
+        artwork_url = self._clean_text(payload.get("artwork_url"), "")
+        if artwork_url:
+            return artwork_url
+
+        tracks = payload.get("tracks")
+        if isinstance(tracks, list):
+            for track in tracks:
+                if not isinstance(track, Mapping):
+                    continue
+                artwork_url = self._clean_text(track.get("artwork_url"), "")
+                if artwork_url:
+                    return artwork_url
+
+        user = payload.get("user")
+        if isinstance(user, Mapping):
+            return self._clean_text(user.get("avatar_url"), "")
+
+        return ""
 
     def _resolve_youtube_artwork_url(self, album_url: str) -> str:
         try:

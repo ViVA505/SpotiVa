@@ -22,7 +22,7 @@ class AppState:
         lyric_search_enabled: bool = DEFAULT_LYRIC_SEARCH_ENABLED,
     ) -> None:
         self.request_timeout = max(5, int(request_timeout))
-        self.search_limit = max(1, min(int(search_limit), 20))
+        self.search_limit = max(1, min(int(search_limit), 50))
         self.title_search_source = normalize_title_search_source(title_search_source)
         self.lyric_search_enabled = bool(lyric_search_enabled)
         self.download_directory = ""
